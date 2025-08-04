@@ -83,6 +83,13 @@ fn postgres_primitive_to_arrow_type(
         Type::BYTEA => (DataType::Binary, None),
         // The type alias for postgres OID is uint32, but iceberg-rust doesn't support unsigned type, so use int64 instead.
         Type::OID => (DataType::Int64, None),
+        Type::RECORD => {
+            // RECORD type represents composite types, convert to a generic struct
+            // For now, we'll create an empty struct since we don't have field information
+            // In a real scenario, this would be populated with the actual composite type fields
+            let fields: Vec<Field> = vec![];
+            (DataType::Struct(fields.into()), None)
+        }
         _ => (DataType::Utf8, None), // Default to string for unknown types
     };
 
@@ -143,6 +150,25 @@ fn postgres_type_to_arrow_type(
             Field::new_struct(name, fields, nullable)
         }
         Kind::Enum(_) => Field::new(name, DataType::Utf8, nullable),
+        Kind::Pseudo => {
+            // Handle pseudo types like RECORD
+            match *typ {
+                Type::RECORD => {
+                    // RECORD type represents composite types, convert to a generic struct
+                    // For now, we'll create an empty struct since we don't have field information
+                    // In a real scenario, this would be populated with the actual composite type fields
+                    let fields: Vec<Field> = vec![];
+                    let mut field = Field::new_struct(name, fields, nullable);
+                    let mut metadata = HashMap::new();
+                    metadata.insert("PARQUET:field_id".to_string(), field_id.to_string());
+                    *field_id += 1;
+                    field.with_metadata(metadata)
+                }
+                _ => {
+                    todo!("Unsupported pseudo type: {:?}", typ);
+                }
+            }
+        }
         _ => {
             todo!("Unsupported type: {:?}", typ);
         }
@@ -304,6 +330,92 @@ fn convert_array_cell(cell: ArrayCell) -> Vec<RowValue> {
                     .unwrap_or(RowValue::Null)
             })
             .collect(),
+        ArrayCell::Composite(values) => values
+            .into_iter()
+            .map(|v| {
+                v.map(|fields| {
+                    let mut struct_values = Vec::with_capacity(fields.len());
+                    for field in fields {
+                        match field {
+                            Cell::I16(value) => {
+                                struct_values.push(RowValue::Int32(value as i32));
+                            }
+                            Cell::I32(value) => {
+                                struct_values.push(RowValue::Int32(value));
+                            }
+                            Cell::U32(value) => {
+                                struct_values.push(RowValue::Int32(value as i32));
+                            }
+                            Cell::I64(value) => {
+                                struct_values.push(RowValue::Int64(value));
+                            }
+                            Cell::F32(value) => {
+                                struct_values.push(RowValue::Float32(value));
+                            }
+                            Cell::F64(value) => {
+                                struct_values.push(RowValue::Float64(value));
+                            }
+                            Cell::Bool(value) => {
+                                struct_values.push(RowValue::Bool(value));
+                            }
+                            Cell::String(value) => {
+                                struct_values.push(RowValue::ByteArray(value.as_bytes().to_vec()));
+                            }
+                            Cell::Date(value) => {
+                                struct_values.push(RowValue::Int32(
+                                    value.signed_duration_since(ARROW_EPOCH).num_days() as i32,
+                                ));
+                            }
+                            Cell::Time(value) => {
+                                let seconds = value.num_seconds_from_midnight() as i64;
+                                let nanos = value.nanosecond() as i64;
+                                struct_values.push(RowValue::Int64(seconds * 1_000_000 + nanos / 1_000))
+                            }
+                            Cell::TimeStamp(value) => {
+                                struct_values.push(RowValue::Int64(value.and_utc().timestamp_micros()))
+                            }
+                            Cell::TimeStampTz(value) => {
+                                struct_values.push(RowValue::Int64(value.timestamp_micros()));
+                            }
+                            Cell::Uuid(value) => {
+                                struct_values.push(RowValue::FixedLenByteArray(*value.as_bytes()));
+                            }
+                            Cell::Json(value) => {
+                                struct_values.push(RowValue::ByteArray(value.to_string().as_bytes().to_vec()));
+                            }
+                            Cell::Bytes(value) => {
+                                struct_values.push(RowValue::ByteArray(value));
+                            }
+                            Cell::Array(value) => {
+                                struct_values.push(RowValue::Array(convert_array_cell(value)));
+                            }
+                            Cell::Numeric(value) => {
+                                match value {
+                                    PgNumeric::Value(bigdecimal) => {
+                                        let (int_val, _) = bigdecimal.into_bigint_and_exponent();
+                                        struct_values.push(RowValue::Decimal(int_val.to_i128().unwrap()));
+                                    }
+                                    _ => {
+                                        // DevNote:
+                                        // nan, inf, -inf will be converted to null
+                                        struct_values.push(RowValue::Null);
+                                    }
+                                }
+                            }
+                            Cell::Null => {
+                                struct_values.push(RowValue::Null);
+                            }
+                            Cell::Composite(_) => {
+                                // Nested composite types are not supported yet
+                                struct_values.push(RowValue::Null);
+                            }
+                        }
+                    }
+                    RowValue::Struct(struct_values)
+                })
+                .unwrap_or(RowValue::Null)
+            })
+            .collect(),
     }
 }
 
@@ -377,6 +489,86 @@ impl From<PostgresTableRow> for MoonlinkRow {
                 }
                 Cell::Null => {
                     values.push(RowValue::Null);
+                }
+                Cell::Composite(fields) => {
+                    let mut struct_values = Vec::with_capacity(fields.len());
+                    for field in fields {
+                        match field {
+                            Cell::I16(value) => {
+                                struct_values.push(RowValue::Int32(value as i32));
+                            }
+                            Cell::I32(value) => {
+                                struct_values.push(RowValue::Int32(value));
+                            }
+                            Cell::U32(value) => {
+                                struct_values.push(RowValue::Int32(value as i32));
+                            }
+                            Cell::I64(value) => {
+                                struct_values.push(RowValue::Int64(value));
+                            }
+                            Cell::F32(value) => {
+                                struct_values.push(RowValue::Float32(value));
+                            }
+                            Cell::F64(value) => {
+                                struct_values.push(RowValue::Float64(value));
+                            }
+                            Cell::Bool(value) => {
+                                struct_values.push(RowValue::Bool(value));
+                            }
+                            Cell::String(value) => {
+                                struct_values.push(RowValue::ByteArray(value.as_bytes().to_vec()));
+                            }
+                            Cell::Date(value) => {
+                                struct_values.push(RowValue::Int32(
+                                    value.signed_duration_since(ARROW_EPOCH).num_days() as i32,
+                                ));
+                            }
+                            Cell::Time(value) => {
+                                let seconds = value.num_seconds_from_midnight() as i64;
+                                let nanos = value.nanosecond() as i64;
+                                struct_values.push(RowValue::Int64(seconds * 1_000_000 + nanos / 1_000))
+                            }
+                            Cell::TimeStamp(value) => {
+                                struct_values.push(RowValue::Int64(value.and_utc().timestamp_micros()))
+                            }
+                            Cell::TimeStampTz(value) => {
+                                struct_values.push(RowValue::Int64(value.timestamp_micros()));
+                            }
+                            Cell::Uuid(value) => {
+                                struct_values.push(RowValue::FixedLenByteArray(*value.as_bytes()));
+                            }
+                            Cell::Json(value) => {
+                                struct_values.push(RowValue::ByteArray(value.to_string().as_bytes().to_vec()));
+                            }
+                            Cell::Bytes(value) => {
+                                struct_values.push(RowValue::ByteArray(value));
+                            }
+                            Cell::Array(value) => {
+                                struct_values.push(RowValue::Array(convert_array_cell(value)));
+                            }
+                            Cell::Numeric(value) => {
+                                match value {
+                                    PgNumeric::Value(bigdecimal) => {
+                                        let (int_val, _) = bigdecimal.into_bigint_and_exponent();
+                                        struct_values.push(RowValue::Decimal(int_val.to_i128().unwrap()));
+                                    }
+                                    _ => {
+                                        // DevNote:
+                                        // nan, inf, -inf will be converted to null
+                                        struct_values.push(RowValue::Null);
+                                    }
+                                }
+                            }
+                            Cell::Null => {
+                                struct_values.push(RowValue::Null);
+                            }
+                            Cell::Composite(_) => {
+                                // Nested composite types are not supported yet
+                                struct_values.push(RowValue::Null);
+                            }
+                        }
+                    }
+                    values.push(RowValue::Struct(struct_values));
                 }
             }
         }
@@ -542,7 +734,13 @@ mod tests {
                     modifier: 0,
                     nullable: true,
                 },
-                // TODO(hjiang): Add composite type handling.
+                // Composite type field - using a custom type that would represent a composite
+                ColumnSchema {
+                    name: "person_field".to_string(),
+                    typ: Type::RECORD, // Using RECORD type for composite types
+                    modifier: 0,
+                    nullable: true,
+                },
             ],
             lookup_key: LookupKey::Key {
                 name: "uuid_field".to_string(),
@@ -551,7 +749,7 @@ mod tests {
         };
 
         let (arrow_schema, identity) = postgres_schema_to_moonlink_schema(&table_schema);
-        assert_eq!(arrow_schema.fields().len(), 23);
+        assert_eq!(arrow_schema.fields().len(), 24);
 
         assert_eq!(arrow_schema.field(0).name(), "bool_field");
         assert_eq!(arrow_schema.field(0).data_type(), &DataType::Boolean);
@@ -651,6 +849,17 @@ mod tests {
             &DataType::List(expected_field.into()),
         );
 
+        // Test composite type field
+        assert_eq!(arrow_schema.field(23).name(), "person_field");
+        // RECORD type should be converted to a struct type
+        match arrow_schema.field(23).data_type() {
+            DataType::Struct(_) => {
+                // This is expected for composite types
+            }
+            _ => panic!("Expected struct type for composite field, got: {:?}", arrow_schema.field(23).data_type()),
+        }
+        assert!(arrow_schema.field(23).is_nullable());
+
         // Check identity property.
         assert_eq!(identity, IdentityProp::Keys(vec![17]));
 
@@ -681,13 +890,14 @@ mod tests {
             (21, "oid_field"),
             (22, "bool_array_field.element"),
             (23, "bool_array_field"),
+            (24, "person_field"),
         ] {
             assert_eq!(
                 iceberg_arrow.name_by_field_id(field_id).unwrap(),
                 expected_name
             );
         }
-        assert!(iceberg_arrow.name_by_field_id(24).is_none());
+        assert!(iceberg_arrow.name_by_field_id(25).is_none());
     }
 
     #[test]
@@ -713,11 +923,17 @@ mod tests {
                 ),
                 Cell::Null,
                 Cell::Uuid(uuid::Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap()),
+                // Composite type value
+                Cell::Composite(vec![
+                    Cell::I32(42),
+                    Cell::String("John".to_string()),
+                    Cell::Bool(true),
+                ]),
             ],
         });
 
         let moonlink_row: MoonlinkRow = postgres_table_row.into();
-        assert_eq!(moonlink_row.values.len(), 12);
+        assert_eq!(moonlink_row.values.len(), 13);
         assert_eq!(moonlink_row.values[0], RowValue::Int32(1));
         assert_eq!(moonlink_row.values[1], RowValue::Int64(2));
         assert_eq!(
@@ -766,6 +982,17 @@ mod tests {
         } else {
             panic!("Expected fixed length byte array");
         };
+
+        // Test composite type value
+        match &moonlink_row.values[12] {
+            RowValue::Struct(fields) => {
+                assert_eq!(fields.len(), 3);
+                assert_eq!(fields[0], RowValue::Int32(42));
+                assert_eq!(fields[1], RowValue::ByteArray(b"John".to_vec()));
+                assert_eq!(fields[2], RowValue::Bool(true));
+            }
+            _ => panic!("Expected struct value"),
+        }
     }
 
     #[test]
@@ -796,11 +1023,17 @@ mod tests {
                             .unwrap(),
                     ),
                 ])),
+                // Array of composite types
+                Cell::Array(ArrayCell::Composite(vec![
+                    Some(vec![Cell::I32(1), Cell::String("Alice".to_string())]),
+                    Some(vec![Cell::I32(2), Cell::String("Bob".to_string())]),
+                    None, // null value
+                ])),
             ],
         });
 
         let moonlink_row: MoonlinkRow = postgres_table_row.into();
-        assert_eq!(moonlink_row.values.len(), 6);
+        assert_eq!(moonlink_row.values.len(), 7);
 
         // Test array of integers
         let int_array = match &moonlink_row.values[0] {
@@ -867,5 +1100,37 @@ mod tests {
             timestamp_array[1],
             RowValue::Int64(1704196800000000) // 2024-01-02 12:00:00 in microseconds
         );
+
+        // Test array of composite types
+        let composite_array = match &moonlink_row.values[6] {
+            RowValue::Array(arr) => arr,
+            _ => panic!("Expected array"),
+        };
+        assert_eq!(composite_array.len(), 3);
+        
+        // First element should be a struct
+        match &composite_array[0] {
+            RowValue::Struct(fields) => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0], RowValue::Int32(1));
+                assert_eq!(fields[1], RowValue::ByteArray(b"Alice".to_vec()));
+            }
+            _ => panic!("Expected struct in array"),
+        }
+        
+        // Second element should be a struct
+        match &composite_array[1] {
+            RowValue::Struct(fields) => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0], RowValue::Int32(2));
+                assert_eq!(fields[1], RowValue::ByteArray(b"Bob".to_vec()));
+            }
+            _ => panic!("Expected struct in array"),
+        }
+        
+        // Third element should be null
+        assert_eq!(composite_array[2], RowValue::Null);
     }
+
+
 }

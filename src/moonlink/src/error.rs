@@ -48,6 +48,9 @@ pub enum Error {
 
     #[error("JSON serialization/deserialization error: {source}")]
     Json { source: Arc<serde_json::Error> },
+
+    #[error("Type error: {0}")]
+    TypeError(String),
 }
 
 pub type Result<T> = result::Result<T, Error>;
