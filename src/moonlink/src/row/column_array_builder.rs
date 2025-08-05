@@ -108,29 +108,82 @@ impl ColumnArrayBuilder {
         }
     }
 
-    /// Helper function to append null to a struct field builder at index i
-    fn append_null_to_struct_field(builder: &mut StructBuilder, i: usize) {
-        if let Some(int_builder) = builder.field_builder::<PrimitiveBuilder<Int32Type>>(i) {
-            int_builder.append_null();
-        } else if let Some(string_builder) = builder.field_builder::<StringBuilder>(i) {
-            string_builder.append_null();
-        } else if let Some(bool_builder) = builder.field_builder::<BooleanBuilder>(i) {
-            bool_builder.append_null();
+    /// Helper function to append a value to a struct field
+    fn append_value_to_struct_field(
+        builder: &mut StructBuilder,
+        i: usize,
+        value: &RowValue,
+    ) -> Result<(), Error> {
+        // Handle all primitive types supported in structs
+        if let Some(bool_builder) = builder.field_builder::<BooleanBuilder>(i) {
+            match value {
+                RowValue::Bool(v) => bool_builder.append_value(*v),
+                RowValue::Null => bool_builder.append_null(),
+                _ => unreachable!("Bool expected from well-typed input"),
+            }
+        } else if let Some(int32_builder) = builder.field_builder::<PrimitiveBuilder<Int32Type>>(i)
+        {
+            match value {
+                RowValue::Int32(v) => int32_builder.append_value(*v),
+                RowValue::Null => int32_builder.append_null(),
+                _ => unreachable!("Int32 expected from well-typed input"),
+            }
         } else if let Some(int64_builder) = builder.field_builder::<PrimitiveBuilder<Int64Type>>(i)
         {
-            int64_builder.append_null();
+            match value {
+                RowValue::Int64(v) => int64_builder.append_value(*v),
+                RowValue::Null => int64_builder.append_null(),
+                _ => unreachable!("Int64 expected from well-typed input"),
+            }
         } else if let Some(float32_builder) =
             builder.field_builder::<PrimitiveBuilder<Float32Type>>(i)
         {
-            float32_builder.append_null();
+            match value {
+                RowValue::Float32(v) => float32_builder.append_value(*v),
+                RowValue::Null => float32_builder.append_null(),
+                _ => unreachable!("Float32 expected from well-typed input"),
+            }
         } else if let Some(float64_builder) =
             builder.field_builder::<PrimitiveBuilder<Float64Type>>(i)
         {
-            float64_builder.append_null();
+            match value {
+                RowValue::Float64(v) => float64_builder.append_value(*v),
+                RowValue::Null => float64_builder.append_null(),
+                _ => unreachable!("Float64 expected from well-typed input"),
+            }
+        } else if let Some(decimal_builder) =
+            builder.field_builder::<PrimitiveBuilder<Decimal128Type>>(i)
+        {
+            match value {
+                RowValue::Decimal(v) => decimal_builder.append_value(*v),
+                RowValue::Null => decimal_builder.append_null(),
+                _ => unreachable!("Decimal128 expected from well-typed input"),
+            }
+        } else if let Some(string_builder) = builder.field_builder::<StringBuilder>(i) {
+            match value {
+                RowValue::ByteArray(v) => {
+                    string_builder.append_value(unsafe { std::str::from_utf8_unchecked(v) })
+                }
+                RowValue::Null => string_builder.append_null(),
+                _ => unreachable!("String expected from well-typed input"),
+            }
+        } else if let Some(binary_builder) = builder.field_builder::<BinaryBuilder>(i) {
+            match value {
+                RowValue::ByteArray(v) => binary_builder.append_value(v),
+                RowValue::Null => binary_builder.append_null(),
+                _ => unreachable!("Binary expected from well-typed input"),
+            }
+        } else if let Some(fixed_builder) = builder.field_builder::<FixedSizeBinaryBuilder>(i) {
+            match value {
+                RowValue::FixedLenByteArray(v) => fixed_builder.append_value(v)?,
+                RowValue::Null => fixed_builder.append_null(),
+                _ => unreachable!("FixedSizeBinary expected from well-typed input"),
+            }
         } else {
             // TODO: handle nested struct and list
             unreachable!("Unsupported field type in struct - only primitive types are supported")
         }
+        Ok(())
     }
 
     /// Append a value to this builder
@@ -360,76 +413,17 @@ impl ColumnArrayBuilder {
             ColumnArrayBuilder::Struct(builder, _array_helper) => {
                 match value {
                     RowValue::Struct(fields) => {
+                        // Append values to each field
                         for i in 0..builder.num_fields() {
-                            if i < fields.len() {
-                                if let Some(int_builder) =
-                                    builder.field_builder::<PrimitiveBuilder<Int32Type>>(i)
-                                {
-                                    match &fields[i] {
-                                        RowValue::Int32(v) => int_builder.append_value(*v),
-                                        RowValue::Null => int_builder.append_null(),
-                                        _ => unreachable!("Int32 expected from well-typed input"),
-                                    }
-                                } else if let Some(string_builder) =
-                                    builder.field_builder::<StringBuilder>(i)
-                                {
-                                    match &fields[i] {
-                                        RowValue::ByteArray(v) => {
-                                            string_builder.append_value(unsafe {
-                                                std::str::from_utf8_unchecked(v)
-                                            });
-                                        }
-                                        RowValue::Null => string_builder.append_null(),
-                                        _ => {
-                                            unreachable!("ByteArray expected from well-typed input")
-                                        }
-                                    }
-                                } else if let Some(bool_builder) =
-                                    builder.field_builder::<BooleanBuilder>(i)
-                                {
-                                    match &fields[i] {
-                                        RowValue::Bool(v) => bool_builder.append_value(*v),
-                                        RowValue::Null => bool_builder.append_null(),
-                                        _ => unreachable!("Bool expected from well-typed input"),
-                                    }
-                                } else if let Some(int64_builder) =
-                                    builder.field_builder::<PrimitiveBuilder<Int64Type>>(i)
-                                {
-                                    match &fields[i] {
-                                        RowValue::Int64(v) => int64_builder.append_value(*v),
-                                        RowValue::Null => int64_builder.append_null(),
-                                        _ => unreachable!("Int64 expected from well-typed input"),
-                                    }
-                                } else if let Some(float32_builder) =
-                                    builder.field_builder::<PrimitiveBuilder<Float32Type>>(i)
-                                {
-                                    match &fields[i] {
-                                        RowValue::Float32(v) => float32_builder.append_value(*v),
-                                        RowValue::Null => float32_builder.append_null(),
-                                        _ => unreachable!("Float32 expected from well-typed input"),
-                                    }
-                                } else if let Some(float64_builder) =
-                                    builder.field_builder::<PrimitiveBuilder<Float64Type>>(i)
-                                {
-                                    match &fields[i] {
-                                        RowValue::Float64(v) => float64_builder.append_value(*v),
-                                        RowValue::Null => float64_builder.append_null(),
-                                        _ => unreachable!("Float64 expected from well-typed input"),
-                                    }
-                                } else {
-                                    // TODO: handle nested struct and list
-                                    unreachable!("Unsupported field type in struct")
-                                }
-                            } else {
-                                // If we don't have enough fields, append null to this field
-                                Self::append_null_to_struct_field(builder, i);
-                            }
+                            let field_value = fields.get(i).unwrap_or(&RowValue::Null);
+                            Self::append_value_to_struct_field(builder, i, field_value)?;
                         }
                         builder.append(true);
                     }
                     RowValue::Null => {
+                        // Append null to all fields
                         for i in 0..builder.num_fields() {
-                            Self::append_null_to_struct_field(builder, i);
+                            Self::append_value_to_struct_field(builder, i, &RowValue::Null)?;
                         }
                         builder.append(false);
                     }
@@ -681,6 +675,8 @@ mod tests {
 
     #[test]
     fn test_column_array_builder_struct() {
+        use arrow::array::StructArray;
+
         // Test struct with primitive types
         let struct_fields = vec![
             Arc::new(arrow::datatypes::Field::new("id", DataType::Int32, true)),
@@ -716,113 +712,105 @@ mod tests {
         let array = builder.finish(&DataType::Struct(struct_fields.into()));
         assert_eq!(array.len(), 2);
 
-        let struct_array = array
-            .as_any()
-            .downcast_ref::<arrow::array::StructArray>()
-            .unwrap();
+        let struct_array = array.as_any().downcast_ref::<StructArray>().unwrap();
+        assert_eq!(struct_array.num_columns(), 3);
 
-        // Check first struct
-        let id_array = struct_array
+        // Check the id column
+        let id_column = struct_array
             .column(0)
             .as_any()
             .downcast_ref::<Int32Array>()
             .unwrap();
-        let name_array = struct_array
+        assert_eq!(id_column.value(0), 1);
+        assert_eq!(id_column.value(1), 2);
+
+        // Check the name column
+        let name_column = struct_array
             .column(1)
             .as_any()
             .downcast_ref::<StringArray>()
             .unwrap();
-        let active_array = struct_array
+        assert_eq!(name_column.value(0), "Alice");
+        assert_eq!(name_column.value(1), "Bob");
+
+        // Check the active column
+        let active_column = struct_array
             .column(2)
             .as_any()
             .downcast_ref::<BooleanArray>()
             .unwrap();
-
-        assert_eq!(id_array.value(0), 1);
-        assert_eq!(name_array.value(0), "Alice");
-        assert!(active_array.value(0));
-
-        assert_eq!(id_array.value(1), 2);
-        assert_eq!(name_array.value(1), "Bob");
-        assert!(!active_array.value(1));
+        assert!(active_column.value(0));
+        assert!(!active_column.value(1));
     }
 
     #[test]
-    fn test_column_array_builder_struct_with_null() {
-        // Test struct with null values
+    fn test_column_array_builder_struct_with_nulls() {
+        use arrow::array::StructArray;
+
+        // Test struct with nulls
         let struct_fields = vec![
             Arc::new(arrow::datatypes::Field::new("id", DataType::Int32, true)),
-            Arc::new(arrow::datatypes::Field::new("name", DataType::Utf8, true)),
-            Arc::new(arrow::datatypes::Field::new("age", DataType::Int32, true)),
+            Arc::new(arrow::datatypes::Field::new(
+                "score",
+                DataType::Float64,
+                true,
+            )),
         ];
 
         let mut builder =
             ColumnArrayBuilder::new(&DataType::Struct(struct_fields.clone().into()), 3, false);
 
-        // Add a struct with some null values
+        // Add struct with all values
         builder
             .append_value(&RowValue::Struct(vec![
                 RowValue::Int32(1),
-                RowValue::ByteArray(b"Alice".to_vec()),
-                RowValue::Null, // null age
+                RowValue::Float64(95.5),
             ]))
             .unwrap();
 
-        // Add a struct with all values
+        // Add struct with null field
         builder
-            .append_value(&RowValue::Struct(vec![
-                RowValue::Int32(2),
-                RowValue::ByteArray(b"Bob".to_vec()),
-                RowValue::Int32(30),
-            ]))
+            .append_value(&RowValue::Struct(vec![RowValue::Int32(2), RowValue::Null]))
             .unwrap();
 
-        // Add a null struct
+        // Add null struct
         builder.append_value(&RowValue::Null).unwrap();
 
         let array = builder.finish(&DataType::Struct(struct_fields.into()));
         assert_eq!(array.len(), 3);
 
-        let struct_array = array
-            .as_any()
-            .downcast_ref::<arrow::array::StructArray>()
-            .unwrap();
+        let struct_array = array.as_any().downcast_ref::<StructArray>().unwrap();
 
-        let id_array = struct_array
+        // Check struct validity
+        assert!(!struct_array.is_null(0));
+        assert!(!struct_array.is_null(1));
+        assert!(struct_array.is_null(2));
+
+        // Check values
+        let id_column = struct_array
             .column(0)
             .as_any()
             .downcast_ref::<Int32Array>()
             .unwrap();
-        let name_array = struct_array
+        assert_eq!(id_column.value(0), 1);
+        assert_eq!(id_column.value(1), 2);
+        assert!(id_column.is_null(2));
+
+        let score_column = struct_array
             .column(1)
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<Float64Array>()
             .unwrap();
-        let age_array = struct_array
-            .column(2)
-            .as_any()
-            .downcast_ref::<Int32Array>()
-            .unwrap();
-
-        // Check first row
-        assert_eq!(id_array.value(0), 1);
-        assert_eq!(name_array.value(0), "Alice");
-        assert!(age_array.is_null(0)); // age is null
-
-        // Check second row
-        assert_eq!(id_array.value(1), 2);
-        assert_eq!(name_array.value(1), "Bob");
-        assert_eq!(age_array.value(1), 30);
-
-        // Check third row (null struct)
-        assert!(id_array.is_null(2));
-        assert!(name_array.is_null(2));
-        assert!(age_array.is_null(2));
+        assert_eq!(score_column.value(0), 95.5);
+        assert!(score_column.is_null(1));
+        assert!(score_column.is_null(2));
     }
 
     #[test]
     fn test_column_array_builder_struct_all_primitive_types() {
-        // Test struct with all supported primitive types
+        use arrow::array::StructArray;
+
+        // Test struct with all primitive types
         let struct_fields = vec![
             Arc::new(arrow::datatypes::Field::new(
                 "bool_field",
@@ -850,99 +838,117 @@ mod tests {
                 true,
             )),
             Arc::new(arrow::datatypes::Field::new(
+                "decimal_field",
+                DataType::Decimal128(10, 2),
+                true,
+            )),
+            Arc::new(arrow::datatypes::Field::new(
                 "string_field",
                 DataType::Utf8,
+                true,
+            )),
+            Arc::new(arrow::datatypes::Field::new(
+                "binary_field",
+                DataType::Binary,
+                true,
+            )),
+            Arc::new(arrow::datatypes::Field::new(
+                "fixed_binary_field",
+                DataType::FixedSizeBinary(16),
                 true,
             )),
         ];
 
         let mut builder =
-            ColumnArrayBuilder::new(&DataType::Struct(struct_fields.clone().into()), 2, false);
+            ColumnArrayBuilder::new(&DataType::Struct(struct_fields.clone().into()), 1, false);
 
-        // Add first struct with all values
+        // Add struct with all types
         builder
             .append_value(&RowValue::Struct(vec![
                 RowValue::Bool(true),
                 RowValue::Int32(42),
-                RowValue::Int64(1234567890),
-                RowValue::Float32(std::f32::consts::PI),
-                RowValue::Float64(std::f64::consts::E),
-                RowValue::ByteArray(b"Hello".to_vec()),
-            ]))
-            .unwrap();
-
-        // Add second struct with some nulls
-        builder
-            .append_value(&RowValue::Struct(vec![
-                RowValue::Bool(false),
-                RowValue::Null,
-                RowValue::Int64(9876543210),
-                RowValue::Null,
-                RowValue::Float64(std::f64::consts::SQRT_2),
-                RowValue::ByteArray(b"World".to_vec()),
+                RowValue::Int64(1000),
+                RowValue::Float32(3.14),
+                RowValue::Float64(2.71828),
+                RowValue::Decimal(12345),
+                RowValue::ByteArray(b"test string".to_vec()),
+                RowValue::ByteArray(b"binary data".to_vec()),
+                RowValue::FixedLenByteArray([
+                    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+                ]),
             ]))
             .unwrap();
 
         let array = builder.finish(&DataType::Struct(struct_fields.into()));
-        assert_eq!(array.len(), 2);
+        let struct_array = array.as_any().downcast_ref::<StructArray>().unwrap();
 
-        let struct_array = array
-            .as_any()
-            .downcast_ref::<arrow::array::StructArray>()
-            .unwrap();
-
-        // Check boolean field
+        // Verify all fields
+        assert_eq!(struct_array.num_columns(), 9);
         let bool_array = struct_array
             .column(0)
             .as_any()
             .downcast_ref::<BooleanArray>()
-            .unwrap();
-        assert!(bool_array.value(0));
-        assert!(!bool_array.value(1));
-
-        // Check int32 field
+            .unwrap()
+            .value(0);
+        assert!(bool_array);
         let int32_array = struct_array
             .column(1)
             .as_any()
             .downcast_ref::<Int32Array>()
-            .unwrap();
-        assert_eq!(int32_array.value(0), 42);
-        assert!(int32_array.is_null(1));
-
-        // Check int64 field
+            .unwrap()
+            .value(0);
+        assert_eq!(int32_array, 42);
         let int64_array = struct_array
             .column(2)
             .as_any()
             .downcast_ref::<Int64Array>()
-            .unwrap();
-        assert_eq!(int64_array.value(0), 1234567890);
-        assert_eq!(int64_array.value(1), 9876543210);
-
-        // Check float32 field
+            .unwrap()
+            .value(0);
+        assert_eq!(int64_array, 1000);
         let float32_array = struct_array
             .column(3)
             .as_any()
             .downcast_ref::<Float32Array>()
-            .unwrap();
-        assert_eq!(float32_array.value(0), std::f32::consts::PI);
-        assert!(float32_array.is_null(1));
-
-        // Check float64 field
+            .unwrap()
+            .value(0);
+        assert_eq!(float32_array, 3.14);
         let float64_array = struct_array
             .column(4)
             .as_any()
             .downcast_ref::<Float64Array>()
-            .unwrap();
-        assert_eq!(float64_array.value(0), std::f64::consts::E);
-        assert_eq!(float64_array.value(1), std::f64::consts::SQRT_2);
-
-        // Check string field
-        let string_array = struct_array
+            .unwrap()
+            .value(0);
+        assert_eq!(float64_array, 2.71828);
+        let decimal_array = struct_array
             .column(5)
             .as_any()
+            .downcast_ref::<arrow::array::Decimal128Array>()
+            .unwrap()
+            .value(0);
+        assert_eq!(decimal_array, 12345);
+        let string_array = struct_array
+            .column(6)
+            .as_any()
             .downcast_ref::<StringArray>()
-            .unwrap();
-        assert_eq!(string_array.value(0), "Hello");
-        assert_eq!(string_array.value(1), "World");
+            .unwrap()
+            .value(0);
+        assert_eq!(string_array, "test string");
+        let binary_array = struct_array
+            .column(7)
+            .as_any()
+            .downcast_ref::<arrow::array::BinaryArray>()
+            .unwrap()
+            .value(0);
+        assert_eq!(binary_array, b"binary data");
+        let fixed_binary_array = struct_array
+            .column(8)
+            .as_any()
+            .downcast_ref::<arrow::array::FixedSizeBinaryArray>()
+            .unwrap()
+            .value(0);
+        assert_eq!(
+            fixed_binary_array,
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        );
     }
 }
