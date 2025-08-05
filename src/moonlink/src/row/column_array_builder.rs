@@ -97,24 +97,19 @@ impl ColumnArrayBuilder {
                 array_builder,
             ),
             DataType::List(inner) => ColumnArrayBuilder::new(inner.data_type(), capacity, true),
-            DataType::Struct(fields) => {
-                // Use Arrow's built-in field builder creation for better compatibility
-                ColumnArrayBuilder::Struct(
-                    StructBuilder::from_fields(fields.clone(), capacity),
-                    array_builder,
-                )
-            }
+            DataType::Struct(fields) => ColumnArrayBuilder::Struct(
+                StructBuilder::from_fields(fields.clone(), capacity),
+                array_builder,
+            ),
             _ => panic!("data type: {data_type:?}"),
         }
     }
 
-    /// Helper function to append a value to a struct field
     fn append_value_to_struct_field(
         builder: &mut StructBuilder,
         i: usize,
         value: &RowValue,
     ) -> Result<(), Error> {
-        // Handle all primitive types supported in structs
         if let Some(bool_builder) = builder.field_builder::<BooleanBuilder>(i) {
             match value {
                 RowValue::Bool(v) => bool_builder.append_value(*v),
@@ -413,7 +408,6 @@ impl ColumnArrayBuilder {
             ColumnArrayBuilder::Struct(builder, _array_helper) => {
                 match value {
                     RowValue::Struct(fields) => {
-                        // Append values to each field
                         for i in 0..builder.num_fields() {
                             let field_value = fields.get(i).unwrap_or(&RowValue::Null);
                             Self::append_value_to_struct_field(builder, i, field_value)?;
@@ -421,7 +415,6 @@ impl ColumnArrayBuilder {
                         builder.append(true);
                     }
                     RowValue::Null => {
-                        // Append null to all fields
                         for i in 0..builder.num_fields() {
                             Self::append_value_to_struct_field(builder, i, &RowValue::Null)?;
                         }
