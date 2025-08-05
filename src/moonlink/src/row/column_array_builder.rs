@@ -107,6 +107,39 @@ impl ColumnArrayBuilder {
             _ => panic!("data type: {data_type:?}"),
         }
     }
+    
+    /// Helper function to append null to a struct field builder at index i
+    fn append_null_to_struct_field(builder: &mut StructBuilder, i: usize) {
+        if let Some(int_builder) =
+            builder.field_builder::<PrimitiveBuilder<Int32Type>>(i)
+        {
+            int_builder.append_null();
+        } else if let Some(string_builder) =
+            builder.field_builder::<StringBuilder>(i)
+        {
+            string_builder.append_null();
+        } else if let Some(bool_builder) =
+            builder.field_builder::<BooleanBuilder>(i)
+        {
+            bool_builder.append_null();
+        } else if let Some(int64_builder) =
+            builder.field_builder::<PrimitiveBuilder<Int64Type>>(i)
+        {
+            int64_builder.append_null();
+        } else if let Some(float32_builder) =
+            builder.field_builder::<PrimitiveBuilder<Float32Type>>(i)
+        {
+            float32_builder.append_null();
+        } else if let Some(float64_builder) =
+            builder.field_builder::<PrimitiveBuilder<Float64Type>>(i)
+        {
+            float64_builder.append_null();
+        } else {
+            // TODO: handle nested struct and list
+            unreachable!("Unsupported field type in struct - only primitive types are supported")
+        }
+    }
+
     /// Append a value to this builder
     pub(crate) fn append_value(&mut self, value: &RowValue) -> Result<(), Error> {
         match self {
@@ -334,10 +367,8 @@ impl ColumnArrayBuilder {
             ColumnArrayBuilder::Struct(builder, _array_helper) => {
                 match value {
                     RowValue::Struct(fields) => {
-                        // Append each field value to the corresponding field builder
                         for i in 0..builder.num_fields() {
                             if i < fields.len() {
-                                // Try to append the field value based on the field type
                                 if let Some(int_builder) =
                                     builder.field_builder::<PrimitiveBuilder<Int32Type>>(i)
                                 {
@@ -395,71 +426,15 @@ impl ColumnArrayBuilder {
                                     unreachable!("Unsupported field type in struct")
                                 }
                             } else {
-                                // If we don't have enough fields, append null to all remaining field builders
-                                if let Some(int_builder) =
-                                    builder.field_builder::<PrimitiveBuilder<Int32Type>>(i)
-                                {
-                                    int_builder.append_null();
-                                } else if let Some(string_builder) =
-                                    builder.field_builder::<StringBuilder>(i)
-                                {
-                                    string_builder.append_null();
-                                } else if let Some(bool_builder) =
-                                    builder.field_builder::<BooleanBuilder>(i)
-                                {
-                                    bool_builder.append_null();
-                                } else if let Some(int64_builder) =
-                                    builder.field_builder::<PrimitiveBuilder<Int64Type>>(i)
-                                {
-                                    int64_builder.append_null();
-                                } else if let Some(float32_builder) =
-                                    builder.field_builder::<PrimitiveBuilder<Float32Type>>(i)
-                                {
-                                    float32_builder.append_null();
-                                } else if let Some(float64_builder) =
-                                    builder.field_builder::<PrimitiveBuilder<Float64Type>>(i)
-                                {
-                                    float64_builder.append_null();
-                                } else {
-                                    // TODO: handle nested struct and list
-                                    unreachable!("Unsupported field type in struct")
-                                }
+                                // If we don't have enough fields, append null to this field
+                                Self::append_null_to_struct_field(builder, i);
                             }
                         }
-                        // Finish the struct row - append true to indicate a non-null struct
                         builder.append(true);
                     }
                     RowValue::Null => {
-                        // For null structs, we need to append null to all field builders
                         for i in 0..builder.num_fields() {
-                            if let Some(int_builder) =
-                                builder.field_builder::<PrimitiveBuilder<Int32Type>>(i)
-                            {
-                                int_builder.append_null();
-                            } else if let Some(string_builder) =
-                                builder.field_builder::<StringBuilder>(i)
-                            {
-                                string_builder.append_null();
-                            } else if let Some(bool_builder) =
-                                builder.field_builder::<BooleanBuilder>(i)
-                            {
-                                bool_builder.append_null();
-                            } else if let Some(int64_builder) =
-                                builder.field_builder::<PrimitiveBuilder<Int64Type>>(i)
-                            {
-                                int64_builder.append_null();
-                            } else if let Some(float32_builder) =
-                                builder.field_builder::<PrimitiveBuilder<Float32Type>>(i)
-                            {
-                                float32_builder.append_null();
-                            } else if let Some(float64_builder) =
-                                builder.field_builder::<PrimitiveBuilder<Float64Type>>(i)
-                            {
-                                float64_builder.append_null();
-                            } else {
-                                // TODO: handle nested struct and list
-                                unreachable!("Unsupported field type in struct - only primitive types are supported")
-                            }
+                            Self::append_null_to_struct_field(builder, i);
                         }
                         builder.append(false);
                     }
