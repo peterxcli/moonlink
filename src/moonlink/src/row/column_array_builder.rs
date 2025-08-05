@@ -868,8 +868,8 @@ mod tests {
                 RowValue::Bool(true),
                 RowValue::Int32(42),
                 RowValue::Int64(1000),
-                RowValue::Float32(3.14),
-                RowValue::Float64(2.71828),
+                RowValue::Float32(std::f32::consts::PI),
+                RowValue::Float64(std::f64::consts::E),
                 RowValue::Decimal(12345),
                 RowValue::ByteArray(b"test string".to_vec()),
                 RowValue::ByteArray(b"binary data".to_vec()),
@@ -911,14 +911,14 @@ mod tests {
             .downcast_ref::<Float32Array>()
             .unwrap()
             .value(0);
-        assert_eq!(float32_array, 3.14);
+        assert_eq!(float32_array, std::f32::consts::PI);
         let float64_array = struct_array
             .column(4)
             .as_any()
             .downcast_ref::<Float64Array>()
             .unwrap()
             .value(0);
-        assert_eq!(float64_array, 2.71828);
+        assert_eq!(float64_array, std::f64::consts::E);
         let decimal_array = struct_array
             .column(5)
             .as_any()
