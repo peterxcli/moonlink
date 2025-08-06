@@ -1,7 +1,7 @@
 use crate::error::Result;
-use crate::row::ColumnArrayBuilder;
 use crate::row::IdentityProp;
 use crate::row::MoonlinkRow;
+use crate::row::NodeBuilder;
 use crate::storage::mooncake_table::batch_id_counter::BatchIdCounter;
 use crate::storage::mooncake_table::delete_vector::BatchDeletionVector;
 use crate::storage::mooncake_table::shared_array::SharedRowBuffer;
@@ -58,7 +58,7 @@ pub(super) struct ColumnStoreBuffer {
     /// Collection of record batches including the current one
     in_memory_batches: Vec<BatchEntry>,
     /// Current batch being built
-    current_batch_builder: Vec<ColumnArrayBuilder>,
+    current_batch_builder: Vec<NodeBuilder<'static>>,
     current_rows: SharedRowBuffer,
     /// Current row count in the current buffer
     current_row_count: usize,
@@ -77,7 +77,7 @@ impl ColumnStoreBuffer {
         let current_batch_builder = schema
             .fields()
             .iter()
-            .map(|field| ColumnArrayBuilder::new(field.data_type(), max_rows_per_buffer, false))
+            .map(|field| NodeBuilder::new(field.data_type(), max_rows_per_buffer))
             .collect();
 
         // Get the initial batch ID from the counter
@@ -112,7 +112,7 @@ impl ColumnStoreBuffer {
         }
 
         row.values.iter().enumerate().for_each(|(i, cell)| {
-            let _res = self.current_batch_builder[i].append_value(cell);
+            let _res = self.current_batch_builder[i].append(cell);
             assert!(_res.is_ok());
         });
         self.current_row_count += 1;
@@ -290,21 +290,15 @@ pub(super) fn create_batch_from_rows(
     schema: Arc<Schema>,
     deletions: &BatchDeletionVector,
 ) -> RecordBatch {
-    let mut builders: Vec<Box<ColumnArrayBuilder>> = schema
+    let mut builders: Vec<Box<NodeBuilder<'static>>> = schema
         .fields()
         .iter()
-        .map(|field| {
-            Box::new(ColumnArrayBuilder::new(
-                field.data_type(),
-                rows.len(),
-                false,
-            ))
-        })
+        .map(|field| Box::new(NodeBuilder::new(field.data_type(), rows.len())))
         .collect();
     for (i, row) in rows.iter().enumerate() {
         if !deletions.is_deleted(i) {
             for (j, _field) in schema.fields().iter().enumerate() {
-                let _res = builders[j].append_value(&row.values[j]);
+                let _res = builders[j].append(&row.values[j]);
                 assert!(_res.is_ok());
             }
         }
