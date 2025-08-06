@@ -405,20 +405,49 @@ impl ColumnArrayBuilder {
                 };
                 Ok(())
             }
-            ColumnArrayBuilder::Struct(builder, _array_helper) => {
+            ColumnArrayBuilder::Struct(builder, array_helper) => {
                 match value {
                     RowValue::Struct(fields) => {
-                        for i in 0..builder.num_fields() {
-                            let field_value = fields.get(i).unwrap_or(&RowValue::Null);
-                            Self::append_value_to_struct_field(builder, i, field_value)?;
+                        for (i, field) in fields.iter().enumerate().take(builder.num_fields()) {
+                            Self::append_value_to_struct_field(builder, i, field)?;
                         }
                         builder.append(true);
                     }
-                    RowValue::Null => {
-                        for i in 0..builder.num_fields() {
-                            Self::append_value_to_struct_field(builder, i, &RowValue::Null)?;
+                    RowValue::Array(v) => {
+                        array_helper.as_mut().unwrap().push(builder.len() as i32);
+                        for item in v {
+                            match item {
+                                RowValue::Struct(fields) => {
+                                    for (i, field) in
+                                        fields.iter().enumerate().take(builder.num_fields())
+                                    {
+                                        Self::append_value_to_struct_field(builder, i, field)?;
+                                    }
+                                    builder.append(true);
+                                }
+                                RowValue::Null => {
+                                    for i in 0..builder.num_fields() {
+                                        Self::append_value_to_struct_field(
+                                            builder,
+                                            i,
+                                            &RowValue::Null,
+                                        )?;
+                                    }
+                                    builder.append(false);
+                                }
+                                _ => unreachable!("Struct expected from well-typed input"),
+                            }
                         }
-                        builder.append(false);
+                    }
+                    RowValue::Null => {
+                        if let Some(helper) = array_helper.as_mut() {
+                            helper.push_null();
+                        } else {
+                            for i in 0..builder.num_fields() {
+                                Self::append_value_to_struct_field(builder, i, &RowValue::Null)?;
+                            }
+                            builder.append(false);
+                        }
                     }
                     _ => unreachable!("Struct expected from well-typed input"),
                 };
@@ -456,8 +485,8 @@ impl ColumnArrayBuilder {
             ColumnArrayBuilder::Binary(builder, array_helper) => {
                 (Arc::new(builder.finish()), array_helper)
             }
-            ColumnArrayBuilder::Struct(builder, array_helper) => {
-                (Arc::new(builder.finish()), array_helper)
+            ColumnArrayBuilder::Struct(helper, array_helper) => {
+                (Arc::new(helper.finish_cloned()), array_helper)
             }
         };
         if let Some(helper) = array_helper.as_mut() {
@@ -943,5 +972,134 @@ mod tests {
             fixed_binary_array,
             &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
+    }
+
+    #[test]
+    fn test_column_array_builder_struct_list() {
+        use arrow::array::{ListArray, StructArray};
+
+        // Test List<Struct> type
+        let struct_fields = vec![
+            Arc::new(arrow::datatypes::Field::new("id", DataType::Int32, true)),
+            Arc::new(arrow::datatypes::Field::new("name", DataType::Utf8, true)),
+            Arc::new(arrow::datatypes::Field::new(
+                "active",
+                DataType::Boolean,
+                true,
+            )),
+        ];
+
+        let mut builder = ColumnArrayBuilder::new(
+            &DataType::List(Arc::new(arrow::datatypes::Field::new(
+                "item",
+                DataType::Struct(struct_fields.clone().into()),
+                true,
+            ))),
+            2,
+            true,
+        );
+
+        // Add a list of structs
+        builder
+            .append_value(&RowValue::Array(vec![
+                RowValue::Struct(vec![
+                    RowValue::Int32(1),
+                    RowValue::ByteArray(b"Alice".to_vec()),
+                    RowValue::Bool(true),
+                ]),
+                RowValue::Struct(vec![
+                    RowValue::Int32(2),
+                    RowValue::ByteArray(b"Bob".to_vec()),
+                    RowValue::Bool(false),
+                ]),
+                RowValue::Null, // null struct in the list
+            ]))
+            .unwrap();
+
+        // Add another list with mixed content
+        builder
+            .append_value(&RowValue::Array(vec![RowValue::Struct(vec![
+                RowValue::Int32(3),
+                RowValue::ByteArray(b"Charlie".to_vec()),
+                RowValue::Bool(true),
+            ])]))
+            .unwrap();
+
+        let array = builder.finish(&DataType::List(Arc::new(arrow::datatypes::Field::new(
+            "item",
+            DataType::Struct(struct_fields.into()),
+            true,
+        ))));
+
+        assert_eq!(array.len(), 2);
+        let list_array = array.as_any().downcast_ref::<ListArray>().unwrap();
+
+        // Check first list [struct1, struct2, null]
+        let first_list = list_array.value(0);
+        let first_struct_array = first_list.as_any().downcast_ref::<StructArray>().unwrap();
+        assert_eq!(first_struct_array.len(), 3);
+
+        // Check struct validity in first list
+        assert!(!first_struct_array.is_null(0)); // first struct
+        assert!(!first_struct_array.is_null(1)); // second struct
+        assert!(first_struct_array.is_null(2)); // null struct
+
+        // Check values in first list
+        let id_column = first_struct_array
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(id_column.value(0), 1);
+        assert_eq!(id_column.value(1), 2);
+        assert!(id_column.is_null(2));
+
+        let name_column = first_struct_array
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(name_column.value(0), "Alice");
+        assert_eq!(name_column.value(1), "Bob");
+        assert!(name_column.is_null(2));
+
+        let active_column = first_struct_array
+            .column(2)
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        assert!(active_column.value(0));
+        assert!(!active_column.value(1));
+        assert!(active_column.is_null(2));
+
+        // Check second list [struct3]
+        let second_list = list_array.value(1);
+        let second_struct_array = second_list.as_any().downcast_ref::<StructArray>().unwrap();
+        assert_eq!(second_struct_array.len(), 1);
+
+        // Check struct validity in second list
+        assert!(!second_struct_array.is_null(0));
+
+        // Check values in second list
+        let id_column = second_struct_array
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(id_column.value(0), 3);
+
+        let name_column = second_struct_array
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(name_column.value(0), "Charlie");
+
+        let active_column = second_struct_array
+            .column(2)
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        assert!(active_column.value(0));
     }
 }
