@@ -2,15 +2,124 @@ use crate::error::Error;
 use crate::row::RowValue;
 use arrow::array::builder::{
     BinaryBuilder, BooleanBuilder, NullBufferBuilder, PrimitiveBuilder, StringBuilder,
-    StructBuilder,
 };
 use arrow::array::types::{Decimal128Type, Float32Type, Float64Type, Int32Type, Int64Type};
-use arrow::array::{ArrayBuilder, ArrayRef, FixedSizeBinaryBuilder, ListArray};
+use arrow::array::{ArrayBuilder, ArrayRef, FixedSizeBinaryBuilder, ListArray, StructArray};
 use arrow::buffer::OffsetBuffer;
-use arrow::compute::kernels::cast;
-use arrow::datatypes::DataType;
-use std::mem::take;
+use arrow::compute::cast;
+use arrow::datatypes::{DataType, FieldRef};
+use arrow::error::ArrowError;
 use std::sync::Arc;
+
+pub(crate) struct ListBuilderHelper {
+    field: FieldRef,
+    offsets: Vec<i32>,
+    nulls: NullBufferBuilder,
+    inner: Box<ColumnArrayBuilder>,
+    len: usize,
+}
+
+impl ListBuilderHelper {
+    pub fn with_capacity(field: FieldRef, capacity: usize) -> Self {
+        Self {
+            inner: Box::new(ColumnArrayBuilder::new(field.data_type(), 0)),
+            field,
+            offsets: Vec::with_capacity(capacity + 1),
+            nulls: NullBufferBuilder::new(capacity),
+            len: 0,
+        }
+    }
+
+    pub fn append_items(&mut self, items: &[RowValue]) -> Result<(), Error> {
+        self.offsets.push(self.inner.len() as i32);
+        for it in items {
+            self.inner.append_value(it)?;
+        }
+        self.nulls.append_non_null();
+        self.len += 1;
+        Ok(())
+    }
+
+    pub fn append_null(&mut self) {
+        let cur = *self.offsets.last().unwrap_or(&0);
+        self.offsets.push(cur); // keeps child length unchanged
+        self.nulls.append_null();
+        self.len += 1;
+    }
+
+    pub fn finish(mut self) -> ArrayRef {
+        let values = self.inner.finish(self.field.data_type());
+        self.offsets.push(values.len() as i32); // closing offset
+        Arc::new(ListArray::new(
+            self.field,
+            OffsetBuffer::new(self.offsets.into()),
+            values,
+            self.nulls.finish(),
+        ))
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+}
+
+pub(crate) struct StructBuilderHelper {
+    fields: Vec<(FieldRef, ColumnArrayBuilder)>,
+    nulls: NullBufferBuilder,
+    len: usize,
+}
+
+impl StructBuilderHelper {
+    pub fn with_capacity(fields: &arrow::datatypes::Fields, capacity: usize) -> Self {
+        let mut children = Vec::with_capacity(fields.len());
+        for f in fields.iter() {
+            children.push((f.clone(), ColumnArrayBuilder::new(f.data_type(), capacity)));
+        }
+        Self {
+            fields: children,
+            nulls: NullBufferBuilder::new(capacity),
+            len: 0,
+        }
+    }
+
+    pub fn append_values(&mut self, vals: &[RowValue]) -> Result<(), Error> {
+        for (i, (_f, child)) in self.fields.iter_mut().enumerate() {
+            let rv = vals.get(i).unwrap_or(&RowValue::Null);
+            child.append_value(rv)?;
+        }
+        self.nulls.append_non_null();
+        self.len += 1;
+        Ok(())
+    }
+
+    pub fn append_null(&mut self) -> Result<(), Error> {
+        for (_f, child) in self.fields.iter_mut() {
+            child.append_value(&RowValue::Null)?;
+        }
+        self.nulls.append_null();
+        self.len += 1;
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> ArrayRef {
+        let mut arrays = Vec::with_capacity(self.fields.len());
+        let mut schema_fields = Vec::with_capacity(self.fields.len());
+        for (f, b) in self.fields.drain(..) {
+            schema_fields.push(f.clone());
+            arrays.push(b.finish(f.data_type()));
+        }
+        let validity = self.nulls.finish();
+        if schema_fields.is_empty() {
+            Arc::new(StructArray::new_empty_fields(self.len, validity))
+        } else {
+            Arc::new(StructArray::new(schema_fields.into(), arrays, validity))
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+}
 
 pub(crate) struct ArrayBuilderHelper {
     offset_builder: Vec<i32>,
