@@ -11,6 +11,7 @@ use arrow::datatypes::{DataType, FieldRef};
 use arrow::error::ArrowError;
 use std::sync::Arc;
 
+/// Helper for building list arrays recursively
 pub(crate) struct ListBuilderHelper {
     field: FieldRef,
     offsets: Vec<i32>,
@@ -63,6 +64,7 @@ impl ListBuilderHelper {
     }
 }
 
+/// Helper for building struct recursively
 pub(crate) struct StructBuilderHelper {
     fields: Vec<(FieldRef, ColumnArrayBuilder)>,
     nulls: NullBufferBuilder,
@@ -121,6 +123,7 @@ impl StructBuilderHelper {
     }
 }
 
+/// A column array builder that can handle different types
 pub(crate) enum ColumnArrayBuilder {
     // Primitive leaves
     Boolean(BooleanBuilder),
@@ -139,6 +142,7 @@ pub(crate) enum ColumnArrayBuilder {
 }
 
 impl ColumnArrayBuilder {
+    /// Create a new column array builder for a specific data type
     pub(crate) fn new(dt: &DataType, capacity: usize) -> Self {
         match dt {
             DataType::Boolean => Self::Boolean(BooleanBuilder::with_capacity(capacity)),
@@ -175,6 +179,7 @@ impl ColumnArrayBuilder {
         }
     }
 
+    /// Append a value to this builder
     pub(crate) fn append_value(&mut self, v: &RowValue) -> Result<(), Error> {
         match (self, v) {
             // ===== leaves
@@ -326,6 +331,7 @@ impl ColumnArrayBuilder {
         }
     }
 
+    /// Finish building and return the array
     pub(crate) fn finish(self, logical_type: &DataType) -> ArrayRef {
         match self {
             Self::Boolean(mut b) => Arc::new(b.finish()),
