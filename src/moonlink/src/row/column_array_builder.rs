@@ -87,11 +87,18 @@ impl StructBuilderHelper {
     }
 
     /// Appends a struct with the given field values.
-    /// If fewer values are provided than fields exist, missing fields are filled with NULL.
+    /// The number of values must match the number of fields exactly.
     pub fn append_values(&mut self, vals: &[RowValue]) -> Result<()> {
+        if vals.len() != self.fields.len() {
+            return Err(ArrowError::InvalidArgumentError(format!(
+                "Struct field count mismatch: expected {} fields, got {} values",
+                self.fields.len(),
+                vals.len()
+            ))
+            .into());
+        }
         for (i, (_f, child)) in self.fields.iter_mut().enumerate() {
-            let rv = vals.get(i).unwrap_or(&RowValue::Null);
-            child.append_value(rv)?;
+            child.append_value(&vals[i])?;
         }
         self.nulls.append_non_null();
         self.len += 1;
@@ -284,7 +291,6 @@ impl ColumnArrayBuilder {
 
             // ===== structs (recursive)
             (Self::Struct(b), RowValue::Struct(vals)) => {
-                // fill missing fields as Null if vals shorter than fields
                 b.append_values(vals)?;
                 Ok(())
             }
@@ -1124,5 +1130,108 @@ mod tests {
         let mut builder = ColumnArrayBuilder::new(&DataType::Int64, /*capacity=*/ 1);
         let result = builder.append_value(&RowValue::Struct(vec![RowValue::Int64(100)]));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_column_array_builder_struct_field_length_mismatch() {
+        // Test struct with 3 fields
+        let struct_fields = vec![
+            Arc::new(arrow::datatypes::Field::new(
+                "field1",
+                DataType::Int32,
+                /*nullable=*/ true,
+            )),
+            Arc::new(arrow::datatypes::Field::new(
+                "field2",
+                DataType::Utf8,
+                /*nullable=*/ true,
+            )),
+            Arc::new(arrow::datatypes::Field::new(
+                "field3",
+                DataType::Boolean,
+                /*nullable=*/ true,
+            )),
+        ];
+
+        let mut builder = ColumnArrayBuilder::new(
+            &DataType::Struct(struct_fields.clone().into()),
+            /*capacity=*/ 2,
+        );
+
+        // Test 1: Append with fewer values than fields (should error)
+        let result = builder.append_value(&RowValue::Struct(vec![
+            RowValue::Int32(1),
+            // field2 and field3 missing
+        ]));
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Struct field count mismatch: expected 3 fields, got 1 values"));
+
+        // Test 2: Append with exact number of values (should succeed)
+        builder
+            .append_value(&RowValue::Struct(vec![
+                RowValue::Int32(2),
+                RowValue::ByteArray(b"test".to_vec()),
+                RowValue::Bool(true),
+            ]))
+            .unwrap();
+
+        // Test 3: Append with more values than fields (should error)
+        let result = builder.append_value(&RowValue::Struct(vec![
+            RowValue::Int32(3),
+            RowValue::ByteArray(b"extra".to_vec()),
+            RowValue::Bool(false),
+            RowValue::Int32(999),                     // Extra value
+            RowValue::ByteArray(b"ignored".to_vec()), // Extra value
+        ]));
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Struct field count mismatch: expected 3 fields, got 5 values"));
+
+        // Test 4: Append with NULLs explicitly provided (should succeed)
+        builder
+            .append_value(&RowValue::Struct(vec![
+                RowValue::Int32(4),
+                RowValue::Null, // Explicit NULL
+                RowValue::Bool(false),
+            ]))
+            .unwrap();
+
+        let array = builder.finish(&DataType::Struct(struct_fields.into()));
+        assert_eq!(array.len(), 2); // Only 2 successful appends
+
+        let struct_array = array.as_any().downcast_ref::<StructArray>().unwrap();
+        assert_eq!(struct_array.num_columns(), 3);
+
+        // Check field1 values
+        let field1 = struct_array
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(field1.value(0), 2);
+        assert_eq!(field1.value(1), 4);
+
+        // Check field2 values
+        let field2 = struct_array
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(field2.value(0), "test");
+        assert!(field2.is_null(1)); // Explicit NULL
+
+        // Check field3 values
+        let field3 = struct_array
+            .column(2)
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        assert!(field3.value(0));
+        assert!(!field3.value(1));
     }
 }
