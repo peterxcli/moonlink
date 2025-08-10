@@ -14,6 +14,8 @@ use std::sync::Arc;
 /// Helper for building list arrays recursively
 pub(crate) struct ListBuilderHelper {
     field: FieldRef,
+    /// Tracks the starting position of each list element in the values array.
+    /// The last offset always points to the total length of values.
     offsets: Vec<i32>,
     nulls: NullBufferBuilder,
     inner: Box<ColumnArrayBuilder>,
@@ -84,7 +86,8 @@ impl StructBuilderHelper {
         }
     }
 
-    pub fn append_values(&mut self, vals: &[RowValue]) -> Result<(), Error> {
+    /// Appends a struct with the given field values.
+    /// If fewer values are provided than fields exist, missing fields are filled with NULL.
         for (i, (_f, child)) in self.fields.iter_mut().enumerate() {
             let rv = vals.get(i).unwrap_or(&RowValue::Null);
             child.append_value(rv)?;
@@ -158,10 +161,12 @@ impl ColumnArrayBuilder {
             DataType::Float64 => {
                 Self::Float64(PrimitiveBuilder::<Float64Type>::with_capacity(capacity))
             }
-            DataType::Decimal128(p, s) => {
+            DataType::Decimal128(precision, scale) => {
                 let b = PrimitiveBuilder::<Decimal128Type>::with_capacity(capacity)
-                    .with_precision_and_scale(*p, *s)
-                    .expect("decimal");
+                    .with_precision_and_scale(*precision, *scale)
+                    .expect(
+                        "Failed to create Decimal128Type with precision {precision} and {scale}",
+                    );
                 Self::Decimal128(b)
             }
             DataType::Utf8 => Self::Utf8(StringBuilder::with_capacity(capacity, capacity * 8)),
@@ -315,6 +320,7 @@ impl ColumnArrayBuilder {
         }
     }
 
+    /// Returns the number of elements in the array
     fn len(&self) -> usize {
         match self {
             Self::List(b) => b.len(),
