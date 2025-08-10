@@ -1,4 +1,4 @@
-use crate::error::Error;
+use crate::error::Result;
 use crate::row::RowValue;
 use arrow::array::builder::{
     BinaryBuilder, BooleanBuilder, NullBufferBuilder, PrimitiveBuilder, StringBuilder,
@@ -33,7 +33,7 @@ impl ListBuilderHelper {
         }
     }
 
-    pub fn append_items(&mut self, items: &[RowValue]) -> Result<(), Error> {
+    pub fn append_items(&mut self, items: &[RowValue]) -> Result<()> {
         self.offsets.push(self.inner.len() as i32);
         for it in items {
             self.inner.append_value(it)?;
@@ -88,6 +88,7 @@ impl StructBuilderHelper {
 
     /// Appends a struct with the given field values.
     /// If fewer values are provided than fields exist, missing fields are filled with NULL.
+    pub fn append_values(&mut self, vals: &[RowValue]) -> Result<()> {
         for (i, (_f, child)) in self.fields.iter_mut().enumerate() {
             let rv = vals.get(i).unwrap_or(&RowValue::Null);
             child.append_value(rv)?;
@@ -97,7 +98,7 @@ impl StructBuilderHelper {
         Ok(())
     }
 
-    pub fn append_null(&mut self) -> Result<(), Error> {
+    pub fn append_null(&mut self) -> Result<()> {
         for (_f, child) in self.fields.iter_mut() {
             child.append_value(&RowValue::Null)?;
         }
@@ -185,7 +186,7 @@ impl ColumnArrayBuilder {
     }
 
     /// Append a value to this builder
-    pub(crate) fn append_value(&mut self, v: &RowValue) -> Result<(), Error> {
+    pub(crate) fn append_value(&mut self, v: &RowValue) -> Result<()> {
         match (self, v) {
             // ===== leaves
             (Self::Boolean(b), RowValue::Bool(x)) => {
