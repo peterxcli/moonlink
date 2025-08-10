@@ -1097,4 +1097,32 @@ mod tests {
             .unwrap();
         assert!(inner_struct.is_null(1));
     }
+
+    #[test]
+    fn test_column_array_builder_error_cases() {
+        // Test type mismatch error - trying to append string to int32 builder
+        let mut builder = ColumnArrayBuilder::new(&DataType::Int32, /*capacity=*/ 1);
+        let result = builder.append_value(&RowValue::ByteArray(b"not_an_int".to_vec()));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Type mismatch"));
+
+        // Test appending array to non-list builder
+        let mut builder = ColumnArrayBuilder::new(&DataType::Boolean, /*capacity=*/ 1);
+        let result = builder.append_value(&RowValue::Array(vec![RowValue::Bool(true)]));
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Got RowValue::Array for non-list builder"));
+
+        // Test appending wrong type to float builder
+        let mut builder = ColumnArrayBuilder::new(&DataType::Float32, /*capacity=*/ 1);
+        let result = builder.append_value(&RowValue::Int32(42));
+        assert!(result.is_err());
+
+        // Test appending struct to primitive builder
+        let mut builder = ColumnArrayBuilder::new(&DataType::Int64, /*capacity=*/ 1);
+        let result = builder.append_value(&RowValue::Struct(vec![RowValue::Int64(100)]));
+        assert!(result.is_err());
+    }
 }
