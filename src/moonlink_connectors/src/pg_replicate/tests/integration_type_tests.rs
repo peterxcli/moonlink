@@ -56,7 +56,7 @@ async fn test_composite_type_handling() {
     let table_id_query = format!(
         "SELECT oid FROM pg_class WHERE relname = 'test_composite_table' AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public')"
     );
-    
+
     let mut table_id = 0;
     for message in client.simple_query(&table_id_query).await.unwrap() {
         if let tokio_postgres::SimpleQueryMessage::Row(row) = message {
@@ -64,7 +64,7 @@ async fn test_composite_type_handling() {
             break;
         }
     }
-    
+
     println!("Table ID: {}", table_id);
 
     // Create a ReplicationClient from the existing client
@@ -113,7 +113,7 @@ async fn test_composite_type_handling() {
     }
 
     println!("Composite type test completed successfully!");
-    
+
     // Note: Cleanup is handled by the connection being dropped
 }
 
@@ -165,7 +165,7 @@ async fn test_array_of_composites_handling() {
     let table_id_query = format!(
         "SELECT oid FROM pg_class WHERE relname = 'test_array_composite_table' AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public')"
     );
-    
+
     let mut table_id = 0;
     for message in client.simple_query(&table_id_query).await.unwrap() {
         if let tokio_postgres::SimpleQueryMessage::Row(row) = message {
@@ -173,7 +173,7 @@ async fn test_array_of_composites_handling() {
             break;
         }
     }
-    
+
     println!("Table ID: {}", table_id);
 
     // Create a ReplicationClient from the existing client
@@ -270,7 +270,7 @@ async fn test_nested_composite_handling() {
     let table_id_query = format!(
         "SELECT oid FROM pg_class WHERE relname = 'test_nested_composite_table' AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public')"
     );
-    
+
     let mut table_id = 0;
     for message in client.simple_query(&table_id_query).await.unwrap() {
         if let tokio_postgres::SimpleQueryMessage::Row(row) = message {
@@ -278,7 +278,7 @@ async fn test_nested_composite_handling() {
             break;
         }
     }
-    
+
     println!("Table ID: {}", table_id);
 
     // Create a ReplicationClient from the existing client
@@ -378,7 +378,7 @@ async fn test_composite_with_array_fields() {
     let table_id_query = format!(
         "SELECT oid FROM pg_class WHERE relname = 'test_composite_array_table' AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public')"
     );
-    
+
     let mut table_id = 0;
     for message in client.simple_query(&table_id_query).await.unwrap() {
         if let tokio_postgres::SimpleQueryMessage::Row(row) = message {
@@ -386,7 +386,7 @@ async fn test_composite_with_array_fields() {
             break;
         }
     }
-    
+
     println!("Table ID: {}", table_id);
 
     // Create a ReplicationClient from the existing client
@@ -487,7 +487,7 @@ async fn test_multi_dimensional_array_rejection() {
         .simple_query("DROP TABLE test_multi_dim_array_table CASCADE;")
         .await
         .unwrap();
-    
+
     // Wait for connection to finish
     let _ = connection_handle.await;
 }
@@ -579,21 +579,19 @@ async fn test_type_oid_mapping() {
         .simple_query("DROP TYPE test_oid_type CASCADE;")
         .await
         .unwrap();
-    
+
     // Wait for connection to finish
     let _ = connection_handle.await;
 }
 
-
-
 #[test]
 fn test_type_information_demo() {
     use tokio_postgres::types::{Field, Type};
-    
+
     println!("=== PostgreSQL Type Information Demo ===");
     println!("This shows what types are returned by the PostgreSQL replication client");
     println!("and how they are handled by TextFormatConverter\n");
-    
+
     // Demonstrate the types that are supported by TextFormatConverter
     let supported_types = vec![
         ("BOOL", Type::BOOL),
@@ -616,13 +614,13 @@ fn test_type_information_demo() {
         ("INT4_ARRAY", Type::INT4_ARRAY),
         ("TEXT_ARRAY", Type::TEXT_ARRAY),
     ];
-    
+
     println!("Supported Simple Types:");
     for (name, typ) in &supported_types {
         let is_supported = TextFormatConverter::is_supported_type(typ);
         println!("  {}: {:?} -> Supported: {}", name, typ, is_supported);
     }
-    
+
     // Demonstrate composite types
     println!("\nComposite Types:");
     let composite_fields = vec![
@@ -630,44 +628,44 @@ fn test_type_information_demo() {
         Field::new("name".to_string(), Type::TEXT),
         Field::new("active".to_string(), Type::BOOL),
     ];
-    
+
     // Note: In real PostgreSQL, composite types would come from the database
     // with specific OIDs. Here we'll just show the concept.
     println!("  Composite fields: {:?}", composite_fields);
     println!("  In PostgreSQL, composite types have Kind::Composite(fields)");
     println!("  Is supported by TextFormatConverter: true (for any composite type)");
-    
+
     // Demonstrate array of composite types
     println!("\nArray of Composite Types:");
     println!("  In PostgreSQL, arrays of composite types have Kind::Array(composite_type)");
     println!("  Is supported by TextFormatConverter: true (for arrays of composites)");
-    
+
     // Show what happens when we try to parse different types
     println!("\nParsing Examples:");
-    
+
     // Simple type parsing
     let int_result = TextFormatConverter::try_from_str(&Type::INT4, "42");
     println!("  INT4 '42' -> {:?}", int_result);
-    
+
     let text_result = TextFormatConverter::try_from_str(&Type::TEXT, "hello world");
     println!("  TEXT 'hello world' -> {:?}", text_result);
-    
+
     let bool_result = TextFormatConverter::try_from_str(&Type::BOOL, "true");
     println!("  BOOL 'true' -> {:?}", bool_result);
-    
+
     // Array parsing
     let array_result = TextFormatConverter::try_from_str(&Type::INT4_ARRAY, "{{1,2,3}}");
     println!("  INT4_ARRAY '{{1,2,3}}' -> {:?}", array_result);
-    
+
     // Composite parsing (using a mock composite type)
     // In real PostgreSQL, this would be a Type with Kind::Composite(fields)
     println!("  Composite parsing: TextFormatConverter can parse composite values like '(42,\"hello\",t)'");
     println!("  Result would be Cell::Composite([Cell::I32(42), Cell::String(\"hello\"), Cell::Bool(true)])");
-    
+
     // Array of composite parsing
     println!("  Array of composite parsing: TextFormatConverter can parse arrays of composites");
     println!("  Result would be Cell::Array(ArrayCell::Composite([...]))");
-    
+
     println!("\n=== Summary ===");
     println!("The PostgreSQL replication client (lines 183-322 in postgres.rs) returns:");
     println!("1. Column schemas with Type objects from tokio_postgres::types::Type");
@@ -677,7 +675,9 @@ fn test_type_information_demo() {
     println!("   - Composite types (custom types with multiple fields)");
     println!("   - Arrays of composite types");
     println!("3. TextFormatConverter::is_supported_type() checks if a type can be parsed");
-    println!("4. TextFormatConverter::try_from_str() converts text representations to Cell objects");
+    println!(
+        "4. TextFormatConverter::try_from_str() converts text representations to Cell objects"
+    );
     println!("5. Composite types are parsed into Cell::Composite(Vec<Cell>)");
     println!("6. Arrays of composites are parsed into Cell::Array(ArrayCell::Composite(...))");
 }
@@ -685,20 +685,20 @@ fn test_type_information_demo() {
 #[test]
 fn test_comprehensive_type_summary() {
     use tokio_postgres::types::Type;
-    
+
     println!("=== COMPREHENSIVE POSTGRESQL TYPE SUMMARY ===");
     println!("Based on analysis of the PostgreSQL replication client code");
     println!("(lines 183-322 in src/moonlink_connectors/src/pg_replicate/clients/postgres.rs)\n");
-    
+
     println!("1. WHAT THE REPLICATION CLIENT RETURNS:");
     println!("   The get_column_schemas() method returns Vec<ColumnSchema> where each ColumnSchema contains:");
     println!("   - name: String (column name)");
     println!("   - typ: tokio_postgres::types::Type (PostgreSQL type)");
     println!("   - modifier: i32 (type modifier, e.g., precision/scale for NUMERIC)");
     println!("   - nullable: bool (whether column can be NULL)\n");
-    
+
     println!("2. SUPPORTED TYPE CATEGORIES:");
-    
+
     // Simple types
     let simple_types = vec![
         ("BOOL", Type::BOOL, "Boolean values (true/false)"),
@@ -716,20 +716,27 @@ fn test_comprehensive_type_summary() {
         ("DATE", Type::DATE, "Date without time"),
         ("TIME", Type::TIME, "Time without date"),
         ("TIMESTAMP", Type::TIMESTAMP, "Date and time"),
-        ("TIMESTAMPTZ", Type::TIMESTAMPTZ, "Date and time with timezone"),
+        (
+            "TIMESTAMPTZ",
+            Type::TIMESTAMPTZ,
+            "Date and time with timezone",
+        ),
         ("UUID", Type::UUID, "Universally unique identifier"),
         ("JSON", Type::JSON, "JSON data"),
         ("JSONB", Type::JSONB, "Binary JSON data"),
         ("BYTEA", Type::BYTEA, "Binary data"),
         ("OID", Type::OID, "Object identifier"),
     ];
-    
+
     println!("   A. SIMPLE TYPES:");
     for (name, typ, description) in &simple_types {
         let is_supported = TextFormatConverter::is_supported_type(typ);
-        println!("      {}: {:?} - {} (Supported: {})", name, typ, description, is_supported);
+        println!(
+            "      {}: {:?} - {} (Supported: {})",
+            name, typ, description, is_supported
+        );
     }
-    
+
     // Array types
     let array_types = vec![
         ("BOOL_ARRAY", Type::BOOL_ARRAY),
@@ -754,31 +761,33 @@ fn test_comprehensive_type_summary() {
         ("BYTEA_ARRAY", Type::BYTEA_ARRAY),
         ("OID_ARRAY", Type::OID_ARRAY),
     ];
-    
+
     println!("\n   B. ARRAY TYPES:");
     for (name, typ) in &array_types {
         let is_supported = TextFormatConverter::is_supported_type(typ);
         println!("      {}: {:?} (Supported: {})", name, typ, is_supported);
     }
-    
+
     println!("\n   C. COMPOSITE TYPES:");
-    println!("      - Custom types with multiple fields (e.g., CREATE TYPE point AS (x int, y int))");
+    println!(
+        "      - Custom types with multiple fields (e.g., CREATE TYPE point AS (x int, y int))"
+    );
     println!("      - Type kind: Kind::Composite(fields)");
     println!("      - Supported: true (any composite type)");
     println!("      - Parsed as: Cell::Composite(Vec<Cell>)");
-    
+
     println!("\n   D. ARRAYS OF COMPOSITE TYPES:");
     println!("      - Arrays containing composite type values");
     println!("      - Type kind: Kind::Array(composite_type)");
     println!("      - Supported: true (arrays of composites)");
     println!("      - Parsed as: Cell::Array(ArrayCell::Composite(Vec<Option<Vec<Cell>>>))");
-    
+
     println!("\n3. TYPE KIND CLASSIFICATION:");
     println!("   - Kind::Simple: Basic PostgreSQL types (BOOL, INT4, TEXT, etc.)");
     println!("   - Kind::Array(inner_type): Array types (INT4_ARRAY, TEXT_ARRAY, etc.)");
     println!("   - Kind::Composite(fields): Custom composite types");
     println!("   - Kind::Array(composite_type): Arrays of composite types");
-    
+
     println!("\n4. TYPE SUPPORT CHECKING:");
     println!("   TextFormatConverter::is_supported_type(&typ) returns true for:");
     println!("   - All simple types listed above");
@@ -786,14 +795,16 @@ fn test_comprehensive_type_summary() {
     println!("   - Any composite type (Kind::Composite)");
     println!("   - Arrays of composite types (Kind::Array with composite inner type)");
     println!("   - Returns false for multi-dimensional arrays (e.g., int[][])");
-    
+
     println!("\n5. TEXT PARSING:");
-    println!("   TextFormatConverter::try_from_str(&typ, text) converts PostgreSQL text format to Cell:");
+    println!(
+        "   TextFormatConverter::try_from_str(&typ, text) converts PostgreSQL text format to Cell:"
+    );
     println!("   - Simple types: Direct parsing (e.g., '42' -> Cell::I32(42))");
     println!("   - Arrays: PostgreSQL array format (e.g., '{{1,2,3}}' -> Cell::Array(...))");
     println!("   - Composites: PostgreSQL composite format (e.g., '(1,\"hello\")' -> Cell::Composite(...))");
     println!("   - Arrays of composites: PostgreSQL array format with composite values");
-    
+
     println!("\n6. CELL REPRESENTATION:");
     println!("   All parsed values are represented as Cell enum variants:");
     println!("   - Cell::Null: NULL values");
@@ -811,7 +822,7 @@ fn test_comprehensive_type_summary() {
     println!("   - Cell::Bytes(Vec<u8>): Binary data");
     println!("   - Cell::Array(ArrayCell): Array values");
     println!("   - Cell::Composite(Vec<Cell>): Composite type values");
-    
+
     println!("\n7. KEY FINDINGS:");
     println!("   - The replication client successfully handles all standard PostgreSQL types");
     println!("   - Composite types are fully supported with nested parsing");
@@ -819,6 +830,6 @@ fn test_comprehensive_type_summary() {
     println!("   - Multi-dimensional arrays are explicitly rejected");
     println!("   - Type information includes OID, modifier, and nullability");
     println!("   - All types are validated before processing");
-    
+
     println!("\n=== END SUMMARY ===");
 }

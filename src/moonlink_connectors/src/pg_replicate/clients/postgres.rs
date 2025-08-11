@@ -278,13 +278,13 @@ impl ReplicationClient {
                          WHERE t.oid = {}",
                         type_oid
                     );
-                    
+
                     let mut type_name = String::new();
                     let mut type_relid = 0;
                     let mut schema_name = String::new();
                     let mut type_type = String::new();
                     let mut type_elem = 0;
-                    
+
                     for message in self.postgres_client.simple_query(&type_query).await? {
                         if let SimpleQueryMessage::Row(row) = message {
                             type_name = row.get("typname").unwrap().to_string();
@@ -295,7 +295,7 @@ impl ReplicationClient {
                             break;
                         }
                     }
-                    
+
                     if type_type == "c" {
                         // This is a composite type, query its fields
                         let fields_query = format!(
@@ -307,25 +307,25 @@ impl ReplicationClient {
                              ORDER BY a.attnum",
                             type_relid
                         );
-                        
+
                         let mut composite_fields = vec![];
                         for message in self.postgres_client.simple_query(&fields_query).await? {
                             if let SimpleQueryMessage::Row(row) = message {
                                 let field_name = row.get("attname").unwrap().to_string();
-                                let field_type_oid: u32 = row.get("atttypid").unwrap().parse().unwrap();
-                                let field_type = Type::from_oid(field_type_oid)
-                                    .unwrap_or_else(|| {
+                                let field_type_oid: u32 =
+                                    row.get("atttypid").unwrap().parse().unwrap();
+                                let field_type =
+                                    Type::from_oid(field_type_oid).unwrap_or_else(|| {
                                         // For unknown field types, use TEXT as fallback
                                         Type::TEXT
                                     });
-                                
+
                                 composite_fields.push(tokio_postgres::types::Field::new(
-                                    field_name,
-                                    field_type,
+                                    field_name, field_type,
                                 ));
                             }
                         }
-                        
+
                         Type::new(
                             type_name,
                             type_oid,
@@ -341,13 +341,17 @@ impl ReplicationClient {
                              WHERE t.oid = {}",
                             type_elem
                         );
-                        
+
                         let mut element_type_name = String::new();
                         let mut element_type_relid = 0;
                         let mut element_schema_name = String::new();
                         let mut element_type_type = String::new();
-                        
-                        for message in self.postgres_client.simple_query(&element_type_query).await? {
+
+                        for message in self
+                            .postgres_client
+                            .simple_query(&element_type_query)
+                            .await?
+                        {
                             if let SimpleQueryMessage::Row(row) = message {
                                 element_type_name = row.get("typname").unwrap().to_string();
                                 element_type_relid = row.get("typrelid").unwrap().parse().unwrap();
@@ -356,7 +360,7 @@ impl ReplicationClient {
                                 break;
                             }
                         }
-                        
+
                         // Check if the element type is a composite type
                         if element_type_type == "c" {
                             // Query the composite element type fields
@@ -369,32 +373,40 @@ impl ReplicationClient {
                                  ORDER BY a.attnum",
                                 element_type_relid
                             );
-                            
+
                             let mut element_composite_fields = vec![];
-                            for message in self.postgres_client.simple_query(&element_fields_query).await? {
+                            for message in self
+                                .postgres_client
+                                .simple_query(&element_fields_query)
+                                .await?
+                            {
                                 if let SimpleQueryMessage::Row(row) = message {
-                                    let element_field_name = row.get("attname").unwrap().to_string();
-                                    let element_field_type_oid: u32 = row.get("atttypid").unwrap().parse().unwrap();
+                                    let element_field_name =
+                                        row.get("attname").unwrap().to_string();
+                                    let element_field_type_oid: u32 =
+                                        row.get("atttypid").unwrap().parse().unwrap();
                                     let element_field_type = Type::from_oid(element_field_type_oid)
                                         .unwrap_or_else(|| {
                                             // For unknown field types, use TEXT as fallback
                                             Type::TEXT
                                         });
-                                    
-                                    element_composite_fields.push(tokio_postgres::types::Field::new(
-                                        element_field_name,
-                                        element_field_type,
-                                    ));
+
+                                    element_composite_fields.push(
+                                        tokio_postgres::types::Field::new(
+                                            element_field_name,
+                                            element_field_type,
+                                        ),
+                                    );
                                 }
                             }
-                            
+
                             let element_composite_type = Type::new(
                                 element_type_name,
                                 type_elem,
                                 Kind::Composite(element_composite_fields),
                                 element_schema_name,
                             );
-                            
+
                             // Create the array type with the composite element type
                             Type::new(
                                 type_name,
@@ -412,9 +424,9 @@ impl ReplicationClient {
                         }
                     } else {
                         return Err(ReplicationClientError::UnsupportedType(
-                        name.clone(),
-                        type_oid,
-                        table_name.to_string(),
+                            name.clone(),
+                            type_oid,
+                            table_name.to_string(),
                         ));
                     }
                 };
