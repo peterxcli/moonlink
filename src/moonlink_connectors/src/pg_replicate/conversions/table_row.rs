@@ -102,7 +102,7 @@ impl TableRowConverter {
                     return Err(TableRowConversionError::NumColsMismatch);
                 };
 
-                let value = if val_str == "\\N" {
+                let value = if val_str == "\\N" || val_str.to_lowercase() == "null" {
                     Cell::Null
                 } else {
                     match TextFormatConverter::try_from_str(&column_schema.typ, &val_str) {

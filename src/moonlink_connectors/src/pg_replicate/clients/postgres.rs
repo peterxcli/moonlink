@@ -86,6 +86,14 @@ impl ReplicationClient {
         ))
     }
 
+    /// Create a ReplicationClient from an existing PostgresClient
+    pub fn from_client(postgres_client: PostgresClient) -> Self {
+        ReplicationClient {
+            postgres_client,
+            in_txn: false,
+        }
+    }
+
     /// Starts a read-only transaction with repeatable read isolation level
     pub async fn begin_readonly_transaction(&mut self) -> Result<(), ReplicationClientError> {
         // Now start the new read-only transaction
@@ -258,14 +266,158 @@ impl ReplicationClient {
                     .parse()
                     .map_err(|_| ReplicationClientError::OidColumnNotU32)?;
 
-                // Fail fast on any type that we are not able to parse in try_from_str.
-                let typ = Type::from_oid(type_oid).ok_or_else(|| {
-                    ReplicationClientError::UnsupportedType(
+                // Get the Type from OID, handling composite types and arrays of composite types specially
+                let typ = if let Some(typ) = Type::from_oid(type_oid) {
+                    typ
+                } else {
+                    // This might be a composite type or array of composite types, query the database for its structure
+                    let type_query = format!(
+                        "SELECT t.typname, t.typrelid, n.nspname, t.typtype, t.typelem
+                         FROM pg_type t
+                         JOIN pg_namespace n ON t.typnamespace = n.oid
+                         WHERE t.oid = {}",
+                        type_oid
+                    );
+                    
+                    let mut type_name = String::new();
+                    let mut type_relid = 0;
+                    let mut schema_name = String::new();
+                    let mut type_type = String::new();
+                    let mut type_elem = 0;
+                    
+                    for message in self.postgres_client.simple_query(&type_query).await? {
+                        if let SimpleQueryMessage::Row(row) = message {
+                            type_name = row.get("typname").unwrap().to_string();
+                            type_relid = row.get("typrelid").unwrap().parse().unwrap();
+                            schema_name = row.get("nspname").unwrap().to_string();
+                            type_type = row.get("typtype").unwrap().to_string();
+                            type_elem = row.get("typelem").unwrap().parse().unwrap_or(0);
+                            break;
+                        }
+                    }
+                    
+                    if type_type == "c" {
+                        // This is a composite type, query its fields
+                        let fields_query = format!(
+                            "SELECT a.attname, a.atttypid
+                             FROM pg_attribute a
+                             WHERE a.attrelid = {}
+                             AND a.attnum > 0
+                             AND NOT a.attisdropped
+                             ORDER BY a.attnum",
+                            type_relid
+                        );
+                        
+                        let mut composite_fields = vec![];
+                        for message in self.postgres_client.simple_query(&fields_query).await? {
+                            if let SimpleQueryMessage::Row(row) = message {
+                                let field_name = row.get("attname").unwrap().to_string();
+                                let field_type_oid: u32 = row.get("atttypid").unwrap().parse().unwrap();
+                                let field_type = Type::from_oid(field_type_oid)
+                                    .unwrap_or_else(|| {
+                                        // For unknown field types, use TEXT as fallback
+                                        Type::TEXT
+                                    });
+                                
+                                composite_fields.push(tokio_postgres::types::Field::new(
+                                    field_name,
+                                    field_type,
+                                ));
+                            }
+                        }
+                        
+                        Type::new(
+                            type_name,
+                            type_oid,
+                            Kind::Composite(composite_fields),
+                            schema_name,
+                        )
+                    } else if type_type == "b" && type_elem != 0 {
+                        // This might be an array type, check if the element type is a composite
+                        let element_type_query = format!(
+                            "SELECT t.typname, t.typrelid, n.nspname, t.typtype
+                             FROM pg_type t
+                             JOIN pg_namespace n ON t.typnamespace = n.oid
+                             WHERE t.oid = {}",
+                            type_elem
+                        );
+                        
+                        let mut element_type_name = String::new();
+                        let mut element_type_relid = 0;
+                        let mut element_schema_name = String::new();
+                        let mut element_type_type = String::new();
+                        
+                        for message in self.postgres_client.simple_query(&element_type_query).await? {
+                            if let SimpleQueryMessage::Row(row) = message {
+                                element_type_name = row.get("typname").unwrap().to_string();
+                                element_type_relid = row.get("typrelid").unwrap().parse().unwrap();
+                                element_schema_name = row.get("nspname").unwrap().to_string();
+                                element_type_type = row.get("typtype").unwrap().to_string();
+                                break;
+                            }
+                        }
+                        
+                        // Check if the element type is a composite type
+                        if element_type_type == "c" {
+                            // Query the composite element type fields
+                            let element_fields_query = format!(
+                                "SELECT a.attname, a.atttypid
+                                 FROM pg_attribute a
+                                 WHERE a.attrelid = {}
+                                 AND a.attnum > 0
+                                 AND NOT a.attisdropped
+                                 ORDER BY a.attnum",
+                                element_type_relid
+                            );
+                            
+                            let mut element_composite_fields = vec![];
+                            for message in self.postgres_client.simple_query(&element_fields_query).await? {
+                                if let SimpleQueryMessage::Row(row) = message {
+                                    let element_field_name = row.get("attname").unwrap().to_string();
+                                    let element_field_type_oid: u32 = row.get("atttypid").unwrap().parse().unwrap();
+                                    let element_field_type = Type::from_oid(element_field_type_oid)
+                                        .unwrap_or_else(|| {
+                                            // For unknown field types, use TEXT as fallback
+                                            Type::TEXT
+                                        });
+                                    
+                                    element_composite_fields.push(tokio_postgres::types::Field::new(
+                                        element_field_name,
+                                        element_field_type,
+                                    ));
+                                }
+                            }
+                            
+                            let element_composite_type = Type::new(
+                                element_type_name,
+                                type_elem,
+                                Kind::Composite(element_composite_fields),
+                                element_schema_name,
+                            );
+                            
+                            // Create the array type with the composite element type
+                            Type::new(
+                                type_name,
+                                type_oid,
+                                Kind::Array(element_composite_type),
+                                schema_name,
+                            )
+                        } else {
+                            // Not a composite element type
+                            return Err(ReplicationClientError::UnsupportedType(
+                                name.clone(),
+                                type_oid,
+                                table_name.to_string(),
+                            ));
+                        }
+                    } else {
+                        return Err(ReplicationClientError::UnsupportedType(
                         name.clone(),
                         type_oid,
                         table_name.to_string(),
-                    )
-                })?;
+                        ));
+                    }
+                };
 
                 if !TextFormatConverter::is_supported_type(&typ) {
                     return Err(ReplicationClientError::UnsupportedType(
