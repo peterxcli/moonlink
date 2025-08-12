@@ -46,6 +46,54 @@ pub enum CdcEventConversionError {
 pub struct CdcEventConverter;
 
 impl CdcEventConverter {
+    fn extract_ddl_event(
+        column_schemas: &[ColumnSchema],
+        tuple_data: &[TupleData],
+    ) -> Result<DdlEvent, CdcEventConversionError> {
+        let mut query = String::new();
+        let mut tags = Vec::new();
+        let mut timestamp = None;
+
+        for (i, column_schema) in column_schemas.iter().enumerate() {
+            match column_schema.name.as_str() {
+                "query" => {
+                    if let TupleData::Text(bytes) = &tuple_data[i] {
+                        query = str::from_utf8(&bytes[..])?.to_string();
+                    }
+                }
+                "tags" => {
+                    if let TupleData::Text(bytes) = &tuple_data[i] {
+                        let tags_str = str::from_utf8(&bytes[..])?;
+                        // Parse PostgreSQL array format {tag1,tag2,...}
+                        if tags_str.starts_with('{') && tags_str.ends_with('}') {
+                            let inner = &tags_str[1..tags_str.len() - 1];
+                            tags = inner.split(',').map(|s| s.trim().to_string()).collect();
+                        }
+                    }
+                }
+                "created_at" => {
+                    if let TupleData::Text(bytes) = &tuple_data[i] {
+                        // Try to parse timestamp
+                        // For now, just store as a placeholder
+                        timestamp = Some(0);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if query.is_empty() {
+            return Err(CdcEventConversionError::MessageNotSupported);
+        }
+
+        Ok(DdlEvent {
+            query,
+            tags,
+            table_id: None,
+            timestamp,
+        })
+    }
+
     fn try_from_tuple_data_slice(
         column_schemas: &[ColumnSchema],
         tuple_data: &[TupleData],
@@ -131,6 +179,24 @@ impl CdcEventConverter {
                 LogicalReplicationMessage::Type(type_body) => Ok(CdcEvent::Type(type_body)),
                 LogicalReplicationMessage::Insert(insert_body) => {
                     let table_id = insert_body.rel_id();
+
+                    // Check if this is a DDL event from mooncake.ddl_logs table
+                    if let Some(schema) = table_schemas.get(&table_id) {
+                        if (schema.table_name.schema == "mooncake"
+                            && schema.table_name.name == "ddl_logs")
+                            || (schema.table_name.name == "ddl_logs"
+                                && schema.column_schemas.iter().any(|c| c.name == "query"))
+                        {
+                            // This is a DDL event, extract the DDL information
+                            if let Ok(ddl_event) = Self::extract_ddl_event(
+                                &schema.column_schemas,
+                                insert_body.tuple().tuple_data(),
+                            ) {
+                                return Ok(CdcEvent::Ddl(ddl_event));
+                            }
+                        }
+                    }
+
                     let column_schemas = &table_schemas
                         .get(&table_id)
                         .ok_or(CdcEventConversionError::MissingSchema(table_id))?
@@ -204,4 +270,13 @@ pub enum CdcEvent {
     StreamStop(StreamStopBody),
     StreamCommit(StreamCommitBody),
     StreamAbort(StreamAbortBody),
+    Ddl(DdlEvent),
+}
+
+#[derive(Debug, Clone)]
+pub struct DdlEvent {
+    pub query: String,
+    pub tags: Vec<String>,
+    pub table_id: Option<SrcTableId>,
+    pub timestamp: Option<i64>,
 }

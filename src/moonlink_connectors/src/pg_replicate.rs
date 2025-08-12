@@ -2,6 +2,7 @@
 
 pub mod clients;
 pub mod conversions;
+pub mod ddl_handler;
 pub mod initial_copy;
 pub mod moonlink_sink;
 pub mod postgres_source;
@@ -89,6 +90,19 @@ impl PostgresConnection {
             )
             .await
             .map_err(PostgresSourceError::from)?;
+
+        // Add mooncake.ddl_logs table to publication if it exists
+        let _ = postgres_client
+            .simple_query(
+                "DO $$ 
+                BEGIN 
+                    IF EXISTS (SELECT 1 FROM information_schema.tables 
+                               WHERE table_schema = 'mooncake' AND table_name = 'ddl_logs') THEN
+                        ALTER PUBLICATION moonlink_pub ADD TABLE mooncake.ddl_logs;
+                    END IF;
+                END $$;",
+            )
+            .await;
 
         let db_name = uri
             .parse::<Config>()

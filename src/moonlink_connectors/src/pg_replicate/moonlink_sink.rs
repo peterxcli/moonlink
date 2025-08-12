@@ -315,6 +315,11 @@ impl Sink {
                 }
                 self.streaming_transactions_state.remove(&xact_id);
             }
+            CdcEvent::Ddl(ddl_event) => {
+                debug!("DDL event received: {:?}", ddl_event);
+                // DDL events are handled separately by DdlHandler
+                // Just log it here for now
+            }
         }
         Ok(None)
     }
