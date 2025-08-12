@@ -1,4 +1,5 @@
 use crate::storage::cache::object_storage::base_cache::CacheTrait;
+use crate::storage::filesystem::accessor::cached_filesystem_accessor::CachedFileSystemAccessor;
 use crate::storage::iceberg::deletion_vector::DeletionVector;
 use crate::storage::iceberg::iceberg_table_manager::*;
 use crate::storage::iceberg::index::FileIndexBlob;
@@ -16,6 +17,7 @@ use crate::storage::mooncake_table::Snapshot as MooncakeSnapshot;
 use crate::storage::storage_utils::{create_data_file, FileId, TableId, TableUniqueFileId};
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::vec;
 
 use iceberg::io::FileIO;
@@ -235,6 +237,16 @@ impl IcebergTableManager {
             return Ok((next_file_id as u32, empty_mooncake_snapshot));
         }
 
+        // Create a cached filesystem accessor for this loading operation
+        // This will cache metadata operations during manifest loading to reduce stats calls
+        let cached_accessor = Arc::new(CachedFileSystemAccessor::new(
+            self.filesystem_accessor.clone(),
+            self.metadata_cache.clone(),
+        ));
+        
+        // Temporarily replace the filesystem accessor with the cached one
+        let original_accessor = std::mem::replace(&mut self.filesystem_accessor, cached_accessor);
+
         // Perform validation before load operation.
         self.validate_schema_consistency_at_load();
 
@@ -247,6 +259,8 @@ impl IcebergTableManager {
             let mut empty_mooncake_snapshot =
                 MooncakeSnapshot::new(self.mooncake_table_metadata.clone());
             empty_mooncake_snapshot.flush_lsn = snapshot_property.flush_lsn;
+            // Restore the original filesystem accessor before returning
+            self.filesystem_accessor = original_accessor;
             return Ok((next_file_id as u32, empty_mooncake_snapshot));
         }
 
@@ -334,6 +348,10 @@ impl IcebergTableManager {
             loaded_file_indices,
             snapshot_property.flush_lsn,
         );
+        
+        // Restore the original filesystem accessor
+        self.filesystem_accessor = original_accessor;
+        
         Ok((next_file_id as u32, mooncake_snapshot))
     }
 }

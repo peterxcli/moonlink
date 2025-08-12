@@ -1,3 +1,4 @@
+use crate::storage::cache::object_storage::metadata_cache::{MetadataCacheConfig, ObjectMetadataCache};
 use crate::storage::filesystem::accessor::base_filesystem_accessor::BaseFileSystemAccess;
 use crate::storage::iceberg::catalog_utils;
 use crate::storage::iceberg::moonlink_catalog::MoonlinkCatalog;
@@ -60,6 +61,9 @@ pub struct IcebergTableManager {
     /// Object storage cache.
     pub(crate) object_storage_cache: ObjectStorageCache,
 
+    /// Object metadata cache.
+    pub(crate) metadata_cache: ObjectMetadataCache,
+
     /// Filesystem accessor.
     pub(crate) filesystem_accessor: Arc<dyn BaseFileSystemAccess>,
 
@@ -91,6 +95,7 @@ impl IcebergTableManager {
             catalog,
             iceberg_table: None,
             object_storage_cache,
+            metadata_cache: ObjectMetadataCache::new(MetadataCacheConfig::default()),
             filesystem_accessor,
             persisted_data_files: HashMap::new(),
             persisted_file_indices: HashMap::new(),
@@ -118,6 +123,7 @@ impl IcebergTableManager {
             catalog,
             iceberg_table: None,
             object_storage_cache,
+            metadata_cache: ObjectMetadataCache::new(MetadataCacheConfig::default()),
             filesystem_accessor,
             persisted_data_files: HashMap::new(),
             persisted_file_indices: HashMap::new(),
