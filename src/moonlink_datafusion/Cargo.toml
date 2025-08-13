@@ -4,6 +4,10 @@ version = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
 
+[[example]]
+name = "segment_elimination_demo"
+path = "examples/segment_elimination_demo.rs"
+
 [dependencies]
 arrow = { workspace = true }
 arrow-ipc = { workspace = true }

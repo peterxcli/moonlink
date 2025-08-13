@@ -1,5 +1,6 @@
 use crate::error::Result;
 use crate::table_metadata::{DeletionVector, MooncakeTableMetadata, PositionDelete};
+use crate::segment_elimination::{FileStatistics, analyze_file_for_segment_elimination};
 use arrow::datatypes::SchemaRef;
 use arrow_ipc::reader::StreamReader;
 use async_trait::async_trait;
@@ -72,8 +73,8 @@ impl TableProvider for MooncakeTableProvider {
             .map(|predicate| state.create_physical_expr(predicate, &schema))
             .transpose()?;
         let mut source = ParquetSource::default();
-        if let Some(predicate) = predicate {
-            source = source.with_predicate(predicate);
+        if let Some(ref predicate) = predicate {
+            source = source.with_predicate(Arc::clone(predicate));
         }
         let url = ObjectStoreUrl::local_filesystem();
         let store = state.runtime_env().object_store(&url)?;
@@ -129,12 +130,38 @@ impl TableProvider for MooncakeTableProvider {
             let file = File::open(data_file).await?;
             let size = file.metadata().await?.len();
             let stream_builder = ParquetRecordBatchStreamBuilder::new(file).await?;
-            let mut access_plan =
-                ParquetAccessPlan::new_all(stream_builder.metadata().num_row_groups());
+            
+            // Apply segment elimination using file statistics
+            let metadata = stream_builder.metadata();
+            let file_stats = FileStatistics::from_parquet_metadata(
+                metadata,
+                &self.schema,
+            ).unwrap_or_else(|_| {
+                // Fallback to placeholder if extraction fails
+                FileStatistics::new_placeholder(
+                    metadata.num_row_groups(),
+                    metadata.file_metadata().num_rows(),
+                )
+            });
+            let include_row_groups = analyze_file_for_segment_elimination(
+                &file_stats,
+                predicate.as_deref(),
+                &self.schema,
+            )?;
+            
+            let mut access_plan = ParquetAccessPlan::new_all(stream_builder.metadata().num_row_groups());
             let mut data_file_row_number = 0;
+            
             for (row_group_number, row_group) in
                 stream_builder.metadata().row_groups().iter().enumerate()
             {
+                // Skip row groups that don't match the predicate
+                if !include_row_groups[row_group_number] {
+                    // Skip this entire row group
+                    data_file_row_number += row_group.num_rows();
+                    continue;
+                }
+                
                 let row_group_row_number = data_file_row_number + row_group.num_rows();
                 let mut selectors = vec![];
                 while data_file_row_number < row_group_row_number {
