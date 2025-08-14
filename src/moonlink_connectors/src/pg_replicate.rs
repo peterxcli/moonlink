@@ -10,6 +10,9 @@ pub mod table;
 pub mod table_init;
 pub mod util;
 
+#[cfg(test)]
+mod tests;
+
 use crate::pg_replicate::clients::postgres::ReplicationClient;
 use crate::pg_replicate::conversions::cdc_event::CdcEventConversionError;
 use crate::pg_replicate::initial_copy::copy_table_stream_impl;
