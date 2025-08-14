@@ -1,3 +1,5 @@
+#![cfg(feature = "connector-pg")]
+
 use crate::pg_replicate::clients::postgres::ReplicationClient;
 use crate::pg_replicate::conversions::text::TextFormatConverter;
 use crate::pg_replicate::table::{ColumnSchema, TableName};
@@ -5,10 +7,12 @@ use serial_test::serial;
 use tokio_postgres::types::{Kind, Type};
 use tokio_postgres::{connect, NoTls};
 
-const TEST_URI: &str = "postgresql://postgres:postgres@postgres:5432/postgres";
-
 async fn setup_connection() -> tokio_postgres::Client {
-    let (client, connection) = connect(TEST_URI, NoTls).await.unwrap();
+    // Use DATABASE_URL env var if set (for CI), otherwise use devcontainer default
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgresql://postgres:postgres@postgres:5432/postgres".to_string());
+
+    let (client, connection) = connect(&database_url, NoTls).await.unwrap();
     tokio::spawn(async move {
         if let Err(e) = connection.await {
             eprintln!("Postgres connection error: {e}");
