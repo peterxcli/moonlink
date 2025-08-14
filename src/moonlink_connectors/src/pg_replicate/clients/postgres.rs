@@ -150,11 +150,12 @@ impl ReplicationClient {
                     schema_name,
                 ))
             } else {
-                // Return error for unknown types to make debugging easier
-                Err(PgReplicateError::InternalError(format!(
-                    "Unknown type encountered: type_name={}, type_oid={}, type_type={}, type_elem={}",
-                    type_name, type_oid, type_type, type_elem
-                )))
+                // Return error for unknown types
+                Err(ReplicationClientError::UnsupportedType(
+                    type_name,
+                    type_oid,
+                    format!("unknown type_type={}, type_elem={}", type_type, type_elem)
+                ))
             }
         })
     }
