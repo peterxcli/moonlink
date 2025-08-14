@@ -154,7 +154,7 @@ impl ReplicationClient {
                 Err(ReplicationClientError::UnsupportedType(
                     type_name,
                     type_oid,
-                    format!("unknown type_type={}, type_elem={}", type_type, type_elem)
+                    format!("unknown type_type={}, type_elem={}", type_type, type_elem),
                 ))
             }
         })
