@@ -21,7 +21,7 @@ pub enum Error {
     Rpc(ErrorStruct),
 
     #[error("{0}")]
-    JoinError(ErrorStruct),
+    TaskJoin(ErrorStruct),
 }
 
 pub type Result<T> = result::Result<T, Error>;
@@ -108,7 +108,7 @@ impl From<moonlink_rpc::Error> for Error {
 impl From<tokio::task::JoinError> for Error {
     #[track_caller]
     fn from(source: tokio::task::JoinError) -> Self {
-        Error::JoinError(ErrorStruct {
+        Error::TaskJoin(ErrorStruct {
             message: format!("Join error: {source}"),
             status: ErrorStatus::Permanent,
             source: Some(Arc::new(source.into())),
