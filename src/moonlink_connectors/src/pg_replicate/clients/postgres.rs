@@ -64,7 +64,7 @@ pub enum ReplicationClientError {
 impl ReplicationClient {
     /// Recursively resolve a PostgreSQL type by its OID.
     /// This handles nested composite types and arrays of composite types.
-    fn resolve_type_recursive<'a>(
+    fn resolve_type<'a>(
         &'a self,
         type_oid: u32,
     ) -> std::pin::Pin<
@@ -91,6 +91,8 @@ impl ReplicationClient {
             let mut type_type = String::new();
             let mut type_elem = 0;
 
+            // Query should return exactly one row since we're querying by OID which is unique
+            let mut row_count = 0;
             for message in self.postgres_client.simple_query(&type_query).await? {
                 if let SimpleQueryMessage::Row(row) = message {
                     type_name = row.get("typname").unwrap().to_string();
@@ -98,65 +100,74 @@ impl ReplicationClient {
                     schema_name = row.get("nspname").unwrap().to_string();
                     type_type = row.get("typtype").unwrap().to_string();
                     type_elem = row.get("typelem").unwrap().parse().unwrap_or(0);
-                    break;
+                    row_count += 1;
                 }
             }
+            assert_eq!(
+                row_count, 1,
+                "Expected exactly one row for type OID {}",
+                type_oid
+            );
 
             // https://www.postgresql.org/docs/current/catalog-pg-type.html
-            if type_type == "c" {
-                // This is a composite type, query its fields
-                let fields_query = format!(
-                    "SELECT a.attname, a.atttypid
+            // composite type (type_type == "c")
+            let is_composite_type = type_type == "c";
+            // If a data type is an array, typelem stores the OID of its element type.
+            // For example, if typtype indicates an array type, typelem would point to the pg_type entry for the base type of the array elements (e.g., integer for integer[]).
+            // If a data type is not an array, typelem will be 0.
+            let is_array_type = type_type == "b" && type_elem != 0;
+
+            if !is_composite_type && !is_array_type {
+                // Return error for unknown types
+                return Err(ReplicationClientError::UnsupportedType(
+                    type_name,
+                    type_oid,
+                    format!("unknown type_type={}, type_elem={}", type_type, type_elem),
+                ));
+            }
+
+            if is_array_type {
+                // This is an array type, recursively resolve the element type
+                let element_type = self.resolve_type(type_elem).await?;
+
+                return Ok(Type::new(
+                    type_name,
+                    type_oid,
+                    Kind::Array(element_type),
+                    schema_name,
+                ));
+            }
+
+            let fields_query = format!(
+                "SELECT a.attname, a.atttypid
                  FROM pg_attribute a
                  WHERE a.attrelid = {}
                  AND a.attnum > 0
                  AND NOT a.attisdropped
                  ORDER BY a.attnum",
-                    type_relid
-                );
+                type_relid
+            );
 
-                let mut composite_fields = vec![];
-                for message in self.postgres_client.simple_query(&fields_query).await? {
-                    if let SimpleQueryMessage::Row(row) = message {
-                        let field_name = row.get("attname").unwrap().to_string();
-                        let field_type_oid: u32 = row.get("atttypid").unwrap().parse().unwrap();
+            let mut composite_fields = vec![];
+            for message in self.postgres_client.simple_query(&fields_query).await? {
+                if let SimpleQueryMessage::Row(row) = message {
+                    let field_name = row.get("attname").unwrap().to_string();
+                    let field_type_oid: u32 = row.get("atttypid").unwrap().parse().unwrap();
 
-                        // Recursively resolve the field type
-                        let field_type = self.resolve_type_recursive(field_type_oid).await?;
+                    // Recursively resolve the field type
+                    let field_type = self.resolve_type(field_type_oid).await?;
 
-                        composite_fields
-                            .push(tokio_postgres::types::Field::new(field_name, field_type));
-                    }
+                    composite_fields
+                        .push(tokio_postgres::types::Field::new(field_name, field_type));
                 }
-
-                Ok(Type::new(
-                    type_name,
-                    type_oid,
-                    Kind::Composite(composite_fields),
-                    schema_name,
-                ))
-            // The column typelem within pg_type is relevant for array types.
-            // If a data type is an array, typelem stores the OID of its element type.
-            // For example, if typtype indicates an array type, typelem would point to the pg_type entry for the base type of the array elements (e.g., integer for integer[]).
-            // If a data type is not an array, typelem will be 0.
-            } else if type_type == "b" && type_elem != 0 {
-                // This is an array type, recursively resolve the element type
-                let element_type = self.resolve_type_recursive(type_elem).await?;
-
-                Ok(Type::new(
-                    type_name,
-                    type_oid,
-                    Kind::Array(element_type),
-                    schema_name,
-                ))
-            } else {
-                // Return error for unknown types
-                Err(ReplicationClientError::UnsupportedType(
-                    type_name,
-                    type_oid,
-                    format!("unknown type_type={}, type_elem={}", type_type, type_elem),
-                ))
             }
+
+            Ok(Type::new(
+                type_name,
+                type_oid,
+                Kind::Composite(composite_fields),
+                schema_name,
+            ))
         })
     }
 
@@ -365,7 +376,7 @@ impl ReplicationClient {
                     .map_err(|_| ReplicationClientError::OidColumnNotU32)?;
 
                 // Get the Type from OID, handling composite types and arrays recursively
-                let typ = self.resolve_type_recursive(type_oid).await.map_err(|_| {
+                let typ = self.resolve_type(type_oid).await.map_err(|_| {
                     ReplicationClientError::UnsupportedType(
                         name.clone(),
                         type_oid,
