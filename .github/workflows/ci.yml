@@ -419,9 +419,14 @@ jobs:
             sleep 2
           done
 
+      - name: Configure PostgreSQL for logical replication
+        run: |
+          PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d postgres -c "ALTER SYSTEM SET wal_level = 'logical';"
+          PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d postgres -c "SELECT pg_reload_conf();"
+
       - name: Run PostgreSQL integration tests
         timeout-minutes: 10
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
         run: |
-          cargo test --package moonlink_connectors --lib --features connector-pg pg_replicate::tests::pg_type_tests
+          cargo test --package moonlink_connectors --lib --features connector-pg
