@@ -39,9 +39,9 @@ pub async fn start_unix_server(
                             }
                         }
                     }
-                    panic!("{error_struct}");
+                    panic!("Unix RPC server error: {error_struct}");
                 }
-                Err(e) => panic!("{e}"),
+                Err(e) => panic!("Unexpected Unix RPC server error: {e}"),
                 Ok(()) => {}
             }
         });
@@ -67,9 +67,9 @@ pub async fn start_tcp_server(backend: Arc<MoonlinkBackend>, addr: SocketAddr) -
                             }
                         }
                     }
-                    panic!("{error_struct}");
+                    panic!("TCP RPC server error: {error_struct}");
                 }
-                Err(e) => panic!("{e}"),
+                Err(e) => panic!("Unexpected TCP RPC server error: {e}"),
                 Ok(()) => {}
             }
         });
