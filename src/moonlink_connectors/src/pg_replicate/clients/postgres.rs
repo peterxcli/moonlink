@@ -62,6 +62,72 @@ pub enum ReplicationClientError {
 }
 
 impl ReplicationClient {
+    /// Query PostgreSQL type information by OID
+    async fn get_type_info(&self, type_oid: u32) -> Result<(String, u32, String, String, u32), ReplicationClientError> {
+        let type_query = format!(
+            "SELECT t.typname, t.typrelid, n.nspname, t.typtype, t.typelem
+         FROM pg_type t
+         JOIN pg_namespace n ON t.typnamespace = n.oid
+         WHERE t.oid = {}",
+            type_oid
+        );
+
+        let mut type_name = String::new();
+        let mut type_relid = 0;
+        let mut schema_name = String::new();
+        let mut type_type = String::new();
+        let mut type_elem = 0;
+
+        // Query should return exactly one row since we're querying by OID which is unique
+        let mut row_count = 0;
+        for message in self.postgres_client.simple_query(&type_query).await? {
+            if let SimpleQueryMessage::Row(row) = message {
+                type_name = row.get("typname").unwrap().to_string();
+                type_relid = row.get("typrelid").unwrap().parse().unwrap();
+                schema_name = row.get("nspname").unwrap().to_string();
+                type_type = row.get("typtype").unwrap().to_string();
+                type_elem = row.get("typelem").unwrap().parse().unwrap_or(0);
+                row_count += 1;
+            }
+        }
+        assert_eq!(
+            row_count, 1,
+            "Expected exactly one row for type OID {}",
+            type_oid
+        );
+
+        Ok((type_name, type_relid, schema_name, type_type, type_elem))
+    }
+
+    /// Query composite type fields by relation ID
+    async fn get_composite_fields(&self, type_relid: u32) -> Result<Vec<tokio_postgres::types::Field>, ReplicationClientError> {
+        let fields_query = format!(
+            "SELECT a.attname, a.atttypid
+             FROM pg_attribute a
+             WHERE a.attrelid = {}
+             AND a.attnum > 0
+             AND NOT a.attisdropped
+             ORDER BY a.attnum",
+            type_relid
+        );
+
+        let mut composite_fields = vec![];
+        for message in self.postgres_client.simple_query(&fields_query).await? {
+            if let SimpleQueryMessage::Row(row) = message {
+                let field_name = row.get("attname").unwrap().to_string();
+                let field_type_oid: u32 = row.get("atttypid").unwrap().parse().unwrap();
+
+                // Recursively resolve the field type
+                let field_type = self.resolve_type(field_type_oid).await?;
+
+                composite_fields
+                    .push(tokio_postgres::types::Field::new(field_name, field_type));
+            }
+        }
+
+        Ok(composite_fields)
+    }
+
     /// Recursively resolve a PostgreSQL type by its OID.
     /// This handles nested composite types and arrays of composite types.
     fn resolve_type<'a>(
@@ -77,37 +143,7 @@ impl ReplicationClient {
             }
 
             // Query the database for the type information
-            let type_query = format!(
-                "SELECT t.typname, t.typrelid, n.nspname, t.typtype, t.typelem
-             FROM pg_type t
-             JOIN pg_namespace n ON t.typnamespace = n.oid
-             WHERE t.oid = {}",
-                type_oid
-            );
-
-            let mut type_name = String::new();
-            let mut type_relid = 0;
-            let mut schema_name = String::new();
-            let mut type_type = String::new();
-            let mut type_elem = 0;
-
-            // Query should return exactly one row since we're querying by OID which is unique
-            let mut row_count = 0;
-            for message in self.postgres_client.simple_query(&type_query).await? {
-                if let SimpleQueryMessage::Row(row) = message {
-                    type_name = row.get("typname").unwrap().to_string();
-                    type_relid = row.get("typrelid").unwrap().parse().unwrap();
-                    schema_name = row.get("nspname").unwrap().to_string();
-                    type_type = row.get("typtype").unwrap().to_string();
-                    type_elem = row.get("typelem").unwrap().parse().unwrap_or(0);
-                    row_count += 1;
-                }
-            }
-            assert_eq!(
-                row_count, 1,
-                "Expected exactly one row for type OID {}",
-                type_oid
-            );
+            let (type_name, type_relid, schema_name, type_type, type_elem) = self.get_type_info(type_oid).await?;
 
             // https://www.postgresql.org/docs/current/catalog-pg-type.html
             // composite type (type_type == "c")
@@ -138,29 +174,7 @@ impl ReplicationClient {
                 ));
             }
 
-            let fields_query = format!(
-                "SELECT a.attname, a.atttypid
-                 FROM pg_attribute a
-                 WHERE a.attrelid = {}
-                 AND a.attnum > 0
-                 AND NOT a.attisdropped
-                 ORDER BY a.attnum",
-                type_relid
-            );
-
-            let mut composite_fields = vec![];
-            for message in self.postgres_client.simple_query(&fields_query).await? {
-                if let SimpleQueryMessage::Row(row) = message {
-                    let field_name = row.get("attname").unwrap().to_string();
-                    let field_type_oid: u32 = row.get("atttypid").unwrap().parse().unwrap();
-
-                    // Recursively resolve the field type
-                    let field_type = self.resolve_type(field_type_oid).await?;
-
-                    composite_fields
-                        .push(tokio_postgres::types::Field::new(field_name, field_type));
-                }
-            }
+            let composite_fields = self.get_composite_fields(type_relid).await?;
 
             Ok(Type::new(
                 type_name,
