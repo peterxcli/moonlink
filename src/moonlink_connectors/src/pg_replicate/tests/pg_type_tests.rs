@@ -67,7 +67,7 @@ async fn test_basic_composite_type() {
 
     let replication_client = ReplicationClient::from_client(client);
     let schema = replication_client
-        .get_table_schema(table_id, table_name, None)
+        .get_table_schema(table_id, table_name, /*publication=*/ None)
         .await
         .unwrap();
 
@@ -128,7 +128,7 @@ async fn test_nested_composite_types() {
                 schema: "public".to_string(),
                 name: "test_nested".to_string(),
             },
-            None,
+            /*publication=*/ None,
         )
         .await
         .unwrap();
@@ -189,7 +189,7 @@ async fn test_array_of_composite_types() {
                 schema: "public".to_string(),
                 name: "test_array_composite".to_string(),
             },
-            None,
+            /*publication=*/ None,
         )
         .await
         .unwrap();
