@@ -88,17 +88,14 @@ impl From<io::Error> for Error {
 impl From<moonlink_rpc::Error> for Error {
     #[track_caller]
     fn from(source: moonlink_rpc::Error) -> Self {
-        let status = match &source {
-            // Use the status that was already determined in the moonlink_rpc crate
-            moonlink_rpc::Error::Io(err) => err.status,
-
-            // All other errors are permanent
-            _ => ErrorStatus::Permanent,
-        };
-
         Error::Rpc(ErrorStruct {
             message: format!("RPC error: {source}"),
-            status,
+            status: match &source {
+                moonlink_rpc::Error::Io(err) => err.status,
+                moonlink_rpc::Error::Decode(err) => err.status,
+                moonlink_rpc::Error::Encode(err) => err.status,
+                moonlink_rpc::Error::PacketTooLong(err) => err.status,
+            },
             source: Some(Arc::new(source.into())),
             location: Some(Location::caller()),
         })
