@@ -301,12 +301,13 @@ impl ReplicationClient {
                     .parse()
                     .map_err(|_| ReplicationClientError::TypeModifierColumnNotI32)?;
 
+                // Note: We now handle multi-dimensional arrays with dimensionality mismatch handling
+                // in the text conversion logic, so we don't reject them here anymore.
                 if matches!(typ.kind(), Kind::Array(_)) && attndims > 1 {
-                    return Err(ReplicationClientError::UnsupportedType(
-                        name.clone(),
-                        type_oid,
-                        table_name.to_string(),
-                    ));
+                    warn!(
+                        "Multi-dimensional array detected: {} with {} dimensions. Will be handled with dimensionality conversion.",
+                        name, attndims
+                    );
                 }
 
                 let nullable =

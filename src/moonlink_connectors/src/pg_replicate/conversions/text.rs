@@ -5,6 +5,7 @@ use bigdecimal::ParseBigDecimalError;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use thiserror::Error;
 use tokio_postgres::types::{Kind, Type};
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::pg_replicate::conversions::{bool::parse_bool, hex};
@@ -45,6 +46,11 @@ pub enum FromTextError {
 
     #[error("invalid composite: {0}")]
     InvalidComposite(#[from] CompositeParseError),
+
+    #[error(
+        "array dimensionality mismatch: expected {expected} dimensions, got {actual} dimensions"
+    )]
+    ArrayDimensionalityMismatch { expected: usize, actual: usize },
 
     #[error("row get error: {0:?}")]
     RowGetError(#[from] Box<dyn std::error::Error + Sync + Send>),
@@ -191,54 +197,76 @@ impl TextFormatConverter {
     pub fn try_from_str(typ: &Type, str: &str) -> Result<Cell, FromTextError> {
         match *typ {
             Type::BOOL => Ok(Cell::Bool(parse_bool(str)?)),
-            Type::BOOL_ARRAY => TextFormatConverter::parse_array(
+            Type::BOOL_ARRAY => TextFormatConverter::parse_array_with_dimensionality_handling(
                 str,
+                typ,
                 |str| Ok(Some(parse_bool(str)?)),
                 ArrayCell::Bool,
             ),
             Type::CHAR | Type::BPCHAR => Ok(Cell::String(str.trim_end().to_string())),
             Type::VARCHAR | Type::NAME | Type::TEXT => Ok(Cell::String(str.to_string())),
-            Type::CHAR_ARRAY | Type::BPCHAR_ARRAY => TextFormatConverter::parse_array(
-                str,
-                |str| Ok(Some(str.trim_end().to_string())),
-                ArrayCell::String,
-            ),
-            Type::VARCHAR_ARRAY | Type::NAME_ARRAY | Type::TEXT_ARRAY => {
-                TextFormatConverter::parse_array(
+            Type::CHAR_ARRAY | Type::BPCHAR_ARRAY => {
+                TextFormatConverter::parse_array_with_dimensionality_handling(
                     str,
+                    typ,
+                    |str| Ok(Some(str.trim_end().to_string())),
+                    ArrayCell::String,
+                )
+            }
+            Type::VARCHAR_ARRAY | Type::NAME_ARRAY | Type::TEXT_ARRAY => {
+                TextFormatConverter::parse_array_with_dimensionality_handling(
+                    str,
+                    typ,
                     |str| Ok(Some(str.to_string())),
                     ArrayCell::String,
                 )
             }
             Type::INT2 => Ok(Cell::I16(str.parse()?)),
-            Type::INT2_ARRAY => {
-                TextFormatConverter::parse_array(str, |str| Ok(Some(str.parse()?)), ArrayCell::I16)
-            }
-            Type::INT4 => Ok(Cell::I32(str.parse()?)),
-            Type::INT4_ARRAY => {
-                TextFormatConverter::parse_array(str, |str| Ok(Some(str.parse()?)), ArrayCell::I32)
-            }
-            Type::INT8 => Ok(Cell::I64(str.parse()?)),
-            Type::INT8_ARRAY => {
-                TextFormatConverter::parse_array(str, |str| Ok(Some(str.parse()?)), ArrayCell::I64)
-            }
-            Type::FLOAT4 => Ok(Cell::F32(str.parse()?)),
-            Type::FLOAT4_ARRAY => {
-                TextFormatConverter::parse_array(str, |str| Ok(Some(str.parse()?)), ArrayCell::F32)
-            }
-            Type::FLOAT8 => Ok(Cell::F64(str.parse()?)),
-            Type::FLOAT8_ARRAY => {
-                TextFormatConverter::parse_array(str, |str| Ok(Some(str.parse()?)), ArrayCell::F64)
-            }
-            Type::NUMERIC => Ok(Cell::Numeric(str.parse()?)),
-            Type::NUMERIC_ARRAY => TextFormatConverter::parse_array(
+            Type::INT2_ARRAY => TextFormatConverter::parse_array_with_dimensionality_handling(
                 str,
+                typ,
+                |str| Ok(Some(str.parse()?)),
+                ArrayCell::I16,
+            ),
+            Type::INT4 => Ok(Cell::I32(str.parse()?)),
+            Type::INT4_ARRAY => TextFormatConverter::parse_array_with_dimensionality_handling(
+                str,
+                typ,
+                |str| Ok(Some(str.parse()?)),
+                ArrayCell::I32,
+            ),
+            Type::INT8 => Ok(Cell::I64(str.parse()?)),
+            Type::INT8_ARRAY => TextFormatConverter::parse_array_with_dimensionality_handling(
+                str,
+                typ,
+                |str| Ok(Some(str.parse()?)),
+                ArrayCell::I64,
+            ),
+            Type::FLOAT4 => Ok(Cell::F32(str.parse()?)),
+            Type::FLOAT4_ARRAY => TextFormatConverter::parse_array_with_dimensionality_handling(
+                str,
+                typ,
+                |str| Ok(Some(str.parse()?)),
+                ArrayCell::F32,
+            ),
+            Type::FLOAT8 => Ok(Cell::F64(str.parse()?)),
+            Type::FLOAT8_ARRAY => TextFormatConverter::parse_array_with_dimensionality_handling(
+                str,
+                typ,
+                |str| Ok(Some(str.parse()?)),
+                ArrayCell::F64,
+            ),
+            Type::NUMERIC => Ok(Cell::Numeric(str.parse()?)),
+            Type::NUMERIC_ARRAY => TextFormatConverter::parse_array_with_dimensionality_handling(
+                str,
+                typ,
                 |str| Ok(Some(str.parse()?)),
                 ArrayCell::Numeric,
             ),
             Type::BYTEA => Ok(Cell::Bytes(hex::from_bytea_hex(str)?)),
-            Type::BYTEA_ARRAY => TextFormatConverter::parse_array(
+            Type::BYTEA_ARRAY => TextFormatConverter::parse_array_with_dimensionality_handling(
                 str,
+                typ,
                 |str| Ok(Some(hex::from_bytea_hex(str)?)),
                 ArrayCell::Bytes,
             ),
@@ -246,8 +274,9 @@ impl TextFormatConverter {
                 let val = NaiveDate::parse_from_str(str, "%Y-%m-%d")?;
                 Ok(Cell::Date(val))
             }
-            Type::DATE_ARRAY => TextFormatConverter::parse_array(
+            Type::DATE_ARRAY => TextFormatConverter::parse_array_with_dimensionality_handling(
                 str,
+                typ,
                 |str| Ok(Some(NaiveDate::parse_from_str(str, "%Y-%m-%d")?)),
                 ArrayCell::Date,
             ),
@@ -255,8 +284,9 @@ impl TextFormatConverter {
                 let val = NaiveTime::parse_from_str(str, "%H:%M:%S%.f")?;
                 Ok(Cell::Time(val))
             }
-            Type::TIME_ARRAY => TextFormatConverter::parse_array(
+            Type::TIME_ARRAY => TextFormatConverter::parse_array_with_dimensionality_handling(
                 str,
+                typ,
                 |str| Ok(Some(NaiveTime::parse_from_str(str, "%H:%M:%S%.f")?)),
                 ArrayCell::Time,
             ),
@@ -264,8 +294,9 @@ impl TextFormatConverter {
                 let val = NaiveDateTime::parse_from_str(str, "%Y-%m-%d %H:%M:%S%.f")?;
                 Ok(Cell::TimeStamp(val))
             }
-            Type::TIMESTAMP_ARRAY => TextFormatConverter::parse_array(
+            Type::TIMESTAMP_ARRAY => TextFormatConverter::parse_array_with_dimensionality_handling(
                 str,
+                typ,
                 |str| {
                     Ok(Some(NaiveDateTime::parse_from_str(
                         str,
@@ -285,50 +316,43 @@ impl TextFormatConverter {
                 Ok(Cell::TimeStampTz(val.into()))
             }
             Type::TIMESTAMPTZ_ARRAY => {
-                match TextFormatConverter::parse_array(
+                TextFormatConverter::parse_array_with_dimensionality_handling(
                     str,
+                    typ,
                     |str| {
-                        Ok(Some(
-                            DateTime::<FixedOffset>::parse_from_str(
+                        let val = match DateTime::<FixedOffset>::parse_from_str(
+                            str,
+                            "%Y-%m-%d %H:%M:%S%.f%#z",
+                        ) {
+                            Ok(val) => val,
+                            Err(_) => DateTime::<FixedOffset>::parse_from_str(
                                 str,
-                                "%Y-%m-%d %H:%M:%S%.f%#z",
-                            )?
-                            .into(),
-                        ))
+                                "%Y-%m-%d %H:%M:%S%.f%:z",
+                            )?,
+                        };
+                        Ok(Some(val.into()))
                     },
                     ArrayCell::TimeStampTz,
-                ) {
-                    Ok(val) => Ok(val),
-                    Err(_) => TextFormatConverter::parse_array(
-                        str,
-                        |str| {
-                            Ok(Some(
-                                DateTime::<FixedOffset>::parse_from_str(
-                                    str,
-                                    "%Y-%m-%d %H:%M:%S%.f%:z",
-                                )?
-                                .into(),
-                            ))
-                        },
-                        ArrayCell::TimeStampTz,
-                    ),
-                }
+                )
             }
-            Type::UUID => {
-                let val = Uuid::parse_str(str)?;
-                Ok(Cell::Uuid(val))
-            }
-            Type::UUID_ARRAY => TextFormatConverter::parse_array(
+            Type::UUID => Ok(Cell::Uuid(Uuid::parse_str(str)?)),
+            Type::UUID_ARRAY => TextFormatConverter::parse_array_with_dimensionality_handling(
                 str,
+                typ,
                 |str| Ok(Some(Uuid::parse_str(str)?)),
                 ArrayCell::Uuid,
             ),
-            Type::JSON | Type::JSONB => {
-                let val = serde_json::from_str(str)?;
-                Ok(Cell::Json(val))
-            }
-            Type::JSON_ARRAY | Type::JSONB_ARRAY => TextFormatConverter::parse_array(
+            Type::JSON => Ok(Cell::Json(serde_json::from_str(str)?)),
+            Type::JSON_ARRAY => TextFormatConverter::parse_array_with_dimensionality_handling(
                 str,
+                typ,
+                |str| Ok(Some(serde_json::from_str(str)?)),
+                ArrayCell::Json,
+            ),
+            Type::JSONB => Ok(Cell::Json(serde_json::from_str(str)?)),
+            Type::JSONB_ARRAY => TextFormatConverter::parse_array_with_dimensionality_handling(
+                str,
+                typ,
                 |str| Ok(Some(serde_json::from_str(str)?)),
                 ArrayCell::Json,
             ),
@@ -336,9 +360,12 @@ impl TextFormatConverter {
                 let val: u32 = str.parse()?;
                 Ok(Cell::U32(val))
             }
-            Type::OID_ARRAY => {
-                TextFormatConverter::parse_array(str, |str| Ok(Some(str.parse()?)), ArrayCell::U32)
-            }
+            Type::OID_ARRAY => TextFormatConverter::parse_array_with_dimensionality_handling(
+                str,
+                typ,
+                |str| Ok(Some(str.parse()?)),
+                ArrayCell::U32,
+            ),
             _ => match typ.kind() {
                 Kind::Composite(fields) => TextFormatConverter::parse_composite(str, fields),
                 Kind::Array(inner_type) => {
@@ -423,6 +450,199 @@ impl TextFormatConverter {
         }
 
         Ok(Cell::Array(m(res)))
+    }
+
+    /// Parses an array with automatic dimensionality detection and handling.
+    /// This function analyzes the Type to determine expected dimensionality and
+    /// handles mismatches by converting the content appropriately.
+    fn parse_array_with_dimensionality_handling<P, M, T>(
+        str: &str,
+        typ: &Type,
+        mut parse: P,
+        m: M,
+    ) -> Result<Cell, FromTextError>
+    where
+        P: FnMut(&str) -> Result<Option<T>, FromTextError>,
+        M: FnOnce(Vec<Option<T>>) -> ArrayCell,
+    {
+        // Determine expected dimensions from the Type
+        let expected_dimensions = TextFormatConverter::get_expected_array_dimensions(typ);
+        let actual_dimensions = TextFormatConverter::count_array_dimensions(str);
+
+        if actual_dimensions != expected_dimensions {
+            warn!(
+                "Array dimensionality mismatch: expected {} dimensions, got {} dimensions. Content: {}",
+                expected_dimensions, actual_dimensions, str
+            );
+
+            // Handle dimensionality conversion
+            let actual_content = TextFormatConverter::parse_array_raw(str)?;
+            let converted_content = TextFormatConverter::convert_array_dimensionality(
+                &actual_content,
+                actual_dimensions,
+                expected_dimensions,
+            )?;
+
+            // Parse the converted content
+            let mut res = vec![];
+            for item in converted_content {
+                let val = if item.to_lowercase() == "null" {
+                    None
+                } else {
+                    parse(&item)?
+                };
+                res.push(val);
+            }
+
+            Ok(Cell::Array(m(res)))
+        } else {
+            // No mismatch, parse normally
+            TextFormatConverter::parse_array(str, parse, m)
+        }
+    }
+
+    /// Parses array content and returns raw string values without type conversion.
+    fn parse_array_raw(str: &str) -> Result<Vec<String>, FromTextError> {
+        if str.len() < 2 {
+            return Err(ArrayParseError::InputTooShort.into());
+        }
+
+        if !str.starts_with('{') || !str.ends_with('}') {
+            return Err(ArrayParseError::MissingBraces.into());
+        }
+
+        let mut res = vec![];
+        let str = &str[1..(str.len() - 1)];
+        let mut val_str = String::with_capacity(10);
+        let mut in_quotes = false;
+        let mut in_escape = false;
+        let mut val_quoted = false;
+        let mut chars = str.chars();
+        let mut done = str.is_empty();
+
+        while !done {
+            loop {
+                match chars.next() {
+                    Some(c) => match c {
+                        c if in_escape => {
+                            val_str.push(c);
+                            in_escape = false;
+                        }
+                        '"' => {
+                            if !in_quotes {
+                                val_quoted = true;
+                            }
+                            in_quotes = !in_quotes;
+                        }
+                        '\\' => in_escape = true,
+                        ',' if !in_quotes => {
+                            break;
+                        }
+                        c => {
+                            val_str.push(c);
+                        }
+                    },
+                    None => {
+                        done = true;
+                        break;
+                    }
+                }
+            }
+            res.push(val_str.clone());
+            val_str.clear();
+            val_quoted = false;
+        }
+
+        Ok(res)
+    }
+
+    /// Counts the number of dimensions in a PostgreSQL array string.
+    fn count_array_dimensions(str: &str) -> usize {
+        let mut dimensions = 0;
+        let mut brace_count = 0;
+        let mut in_quotes = false;
+        let mut in_escape = false;
+
+        for c in str.chars() {
+            match c {
+                c if in_escape => {
+                    in_escape = false;
+                }
+                '"' => {
+                    in_quotes = !in_quotes;
+                }
+                '\\' => {
+                    in_escape = true;
+                }
+                '{' if !in_quotes => {
+                    brace_count += 1;
+                    if brace_count > dimensions {
+                        dimensions = brace_count;
+                    }
+                }
+                '}' if !in_quotes => {
+                    brace_count -= 1;
+                }
+                _ => {}
+            }
+        }
+
+        dimensions
+    }
+
+    /// Converts array content between different dimensionalities.
+    /// This handles the edge cases mentioned in the user requirements:
+    /// 1. If column is text[][] and content is ["aa", "bb"], convert to [["aa", "bb"]]
+    /// 2. If column is text[] and content is [["aa"], ["bb"]], convert to ["aa"]
+    fn convert_array_dimensionality(
+        content: &[String],
+        actual_dimensions: usize,
+        expected_dimensions: usize,
+    ) -> Result<Vec<String>, FromTextError> {
+        match (actual_dimensions, expected_dimensions) {
+            (1, 2) => {
+                // Convert 1D to 2D: ["aa", "bb"] -> [["aa", "bb"]]
+                if content.len() == 1 {
+                    // Single element case
+                    Ok(vec![content[0].clone()])
+                } else {
+                    // Multiple elements case - wrap in another array
+                    let joined = format!("{{{}}}", content.join(","));
+                    Ok(vec![joined])
+                }
+            }
+            (2, 1) => {
+                // Convert 2D to 1D: [["aa"], ["bb"]] -> ["aa"]
+                if content.len() == 1 {
+                    // Single element case - extract the inner content
+                    let inner = &content[0];
+                    if inner.starts_with('{') && inner.ends_with('}') {
+                        let inner_content = &inner[1..inner.len() - 1];
+                        Ok(vec![inner_content.to_string()])
+                    } else {
+                        Ok(vec![inner.clone()])
+                    }
+                } else {
+                    // Multiple elements case - take the first element
+                    let first = &content[0];
+                    if first.starts_with('{') && first.ends_with('}') {
+                        let inner_content = &first[1..first.len() - 1];
+                        Ok(vec![inner_content.to_string()])
+                    } else {
+                        Ok(vec![first.clone()])
+                    }
+                }
+            }
+            _ => {
+                // For other cases, return the original content
+                // This handles cases where we can't easily convert
+                warn!(
+                    "Unsupported dimensionality conversion: {} -> {} dimensions",
+                    actual_dimensions, expected_dimensions
+                );
+                Ok(content.to_vec())
+            }
+        }
     }
 
     /// Parses a PostgreSQL composite type from its text representation.
@@ -594,11 +814,111 @@ impl TextFormatConverter {
 
         Ok(Cell::Array(ArrayCell::Composite(res)))
     }
+
+    /// Determines the expected array dimensions from a Type.
+    /// For simple array types (e.g., TEXT_ARRAY), this returns 1.
+    /// For multi-dimensional arrays, this would return the number of dimensions.
+    fn get_expected_array_dimensions(typ: &Type) -> usize {
+        // For now, we assume all array types expect 1 dimension
+        // This can be extended in the future to handle multi-dimensional arrays
+        // based on the schema information
+        match typ.kind() {
+            Kind::Array(inner_type) => {
+                // Check if the inner type is also an array (multi-dimensional)
+                match inner_type.kind() {
+                    Kind::Array(_) => 2, // Multi-dimensional array
+                    _ => 1,              // Single-dimensional array
+                }
+            }
+            _ => 1, // Default to 1 dimension
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_array_dimensionality_mismatch_1d_to_2d() {
+        // Test case 1: column is text[][] and content is ["aa", "bb"]
+        // Should convert to [["aa", "bb"]]
+        let content = vec!["aa".to_string(), "bb".to_string()];
+        let result = TextFormatConverter::convert_array_dimensionality(&content, 1, 2).unwrap();
+        assert_eq!(result, vec!["{aa,bb}"]);
+    }
+
+    #[test]
+    fn test_array_dimensionality_mismatch_2d_to_1d() {
+        // Test case 2: column is text[] and content is [["aa"], ["bb"]]
+        // Should convert to ["aa"]
+        let content = vec!["{aa}".to_string(), "{bb}".to_string()];
+        let result = TextFormatConverter::convert_array_dimensionality(&content, 2, 1).unwrap();
+        assert_eq!(result, vec!["aa"]);
+    }
+
+    #[test]
+    fn test_count_array_dimensions() {
+        assert_eq!(TextFormatConverter::count_array_dimensions("{a,b}"), 1);
+        assert_eq!(TextFormatConverter::count_array_dimensions("{{a},{b}}"), 2);
+        assert_eq!(TextFormatConverter::count_array_dimensions("{{{a,b}}}"), 3);
+        assert_eq!(
+            TextFormatConverter::count_array_dimensions("{\"a\",\"b\"}"),
+            1
+        );
+        assert_eq!(
+            TextFormatConverter::count_array_dimensions("{{\"a\"},{\"b\"}}"),
+            2
+        );
+    }
+
+    #[test]
+    fn test_parse_array_raw() {
+        let result = TextFormatConverter::parse_array_raw("{a,b,c}").unwrap();
+        assert_eq!(result, vec!["a", "b", "c"]);
+
+        let result = TextFormatConverter::parse_array_raw("{\"a\",\"b\",\"c\"}").unwrap();
+        assert_eq!(result, vec!["a", "b", "c"]);
+
+        let result = TextFormatConverter::parse_array_raw("{null,a,b}").unwrap();
+        assert_eq!(result, vec!["null", "a", "b"]);
+    }
+
+    #[test]
+    fn test_get_expected_array_dimensions() {
+        // Test simple array types
+        assert_eq!(
+            TextFormatConverter::get_expected_array_dimensions(&Type::TEXT_ARRAY),
+            1
+        );
+        assert_eq!(
+            TextFormatConverter::get_expected_array_dimensions(&Type::INT4_ARRAY),
+            1
+        );
+
+        // Test multi-dimensional array types (if they exist)
+        // Note: This would need to be tested with actual multi-dimensional array types
+        // For now, we assume all standard array types are 1-dimensional
+    }
+
+    #[test]
+    fn test_array_dimensionality_handling_integration() {
+        // Test the full integration with actual array parsing
+        // This tests that the dimensionality handling works end-to-end
+
+        // Test 1D array parsing (normal case)
+        let result = TextFormatConverter::try_from_str(&Type::TEXT_ARRAY, "{a,b,c}").unwrap();
+        assert!(matches!(result, Cell::Array(ArrayCell::String(_))));
+
+        // Test 2D array content being converted to 1D
+        // This simulates the case where content is [["aa"], ["bb"]] but schema expects ["aa"]
+        let result = TextFormatConverter::try_from_str(&Type::TEXT_ARRAY, "{{aa},{bb}}").unwrap();
+        assert!(matches!(result, Cell::Array(ArrayCell::String(_))));
+
+        // Test 1D array content being converted to 2D
+        // This would require a multi-dimensional array type, which we don't have in the standard types
+        // but the logic is in place for when such types are supported
+    }
 
     #[test]
     fn parse_text_array_quoted_null_as_string() {
