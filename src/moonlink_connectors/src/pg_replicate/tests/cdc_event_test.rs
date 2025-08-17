@@ -107,15 +107,21 @@ async fn insert_test_data(client: &tokio_postgres::Client) {
 }
 
 async fn ensure_logical_replication(client: &tokio_postgres::Client) {
-    let _ = client
+    client
         .simple_query("ALTER SYSTEM SET wal_level = 'logical';")
-        .await;
-    let _ = client.simple_query("SELECT pg_reload_conf();").await;
+        .await
+        .unwrap();
+    client
+        .simple_query("SELECT pg_reload_conf();")
+        .await
+        .unwrap();
 }
 
 async fn drop_replication_slot_if_exists(client: &tokio_postgres::Client, slot_name: &str) {
     let query = format!("SELECT pg_drop_replication_slot('{slot}') WHERE EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = '{slot}');", slot = slot_name);
-    let _ = client.simple_query(&query).await;
+    if let Err(e) = client.simple_query(&query).await {
+        eprintln!("drop_replication_slot_if_exists error: {e}");
+    }
 }
 
 async fn create_replication_client() -> ReplicationClient {
@@ -170,7 +176,12 @@ fn spawn_background_changes(database_url: String) {
                 "INSERT INTO test_composite_cdc VALUES 
                  (2, ROW('999 Test St', 'Test City', 12345)::test_address, NULL, NULL, NULL);",
             )
-            .await;
+            .await
+            .map_err(|e| {
+                eprintln!("background INSERT id=2 failed: {e}");
+                e
+            })
+            .ok();
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -180,7 +191,12 @@ fn spawn_background_changes(database_url: String) {
                  SET basic_addr = ROW('Updated St', 'Updated City', 54321)::test_address 
                  WHERE id = 1;",
             )
-            .await;
+            .await
+            .map_err(|e| {
+                eprintln!("background UPDATE id=1 failed: {e}");
+                e
+            })
+            .ok();
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -199,13 +215,23 @@ fn spawn_background_changes(database_url: String) {
                         ROW('W Way', 'W City', 55555)::test_address]
                  );",
             )
-            .await;
+            .await
+            .map_err(|e| {
+                eprintln!("background INSERT id=3 failed: {e}");
+                e
+            })
+            .ok();
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let _ = bg_client
             .simple_query("DELETE FROM test_composite_cdc WHERE id = 2;")
-            .await;
+            .await
+            .map_err(|e| {
+                eprintln!("background DELETE id=2 failed: {e}");
+                e
+            })
+            .ok();
     });
 }
 
@@ -225,16 +251,13 @@ async fn test_composite_types_in_cdc_stream() {
         .begin_readonly_transaction()
         .await
         .unwrap();
-    let slot_info = match tokio::time::timeout(
+    let slot_info = tokio::time::timeout(
         Duration::from_secs(10),
         replication_client.get_or_create_slot(REPLICATION_SLOT),
     )
     .await
-    {
-        Ok(Ok(slot_info)) => slot_info,
-        Ok(Err(_)) => return,
-        Err(_) => return,
-    };
+    .expect("timeout waiting for get_or_create_slot")
+    .expect("get_or_create_slot failed");
 
     // Commit the transaction after creating the slot
     replication_client.commit_txn().await.unwrap();
@@ -247,16 +270,13 @@ async fn test_composite_types_in_cdc_stream() {
     };
 
     // Create CDC stream (converted events) and attach table schema for conversion
-    let mut cdc_stream = match tokio::time::timeout(
+    let mut cdc_stream = tokio::time::timeout(
         Duration::from_secs(10),
         PostgresSource::create_cdc_stream(replication_client, cdc_config.clone()),
     )
     .await
-    {
-        Ok(Ok(stream)) => stream,
-        Ok(Err(_)) => return,
-        Err(_) => return,
-    };
+    .expect("timeout waiting for create_cdc_stream")
+    .expect("create_cdc_stream failed");
 
     // Fetch and add the table schema so composite parsing works
     let table_schema = fetch_table_schema_for_test_table(PUBLICATION).await;
@@ -282,10 +302,7 @@ async fn test_composite_types_in_cdc_stream() {
             Ok(Some(Ok(event))) => {
                 events.push(event);
             }
-            Ok(Some(Err(e))) => {
-                eprintln!("Error in CDC stream: {:?}", e);
-                continue;
-            }
+            Ok(Some(Err(e))) => panic!("Error in CDC stream: {:?}", e),
             Ok(None) => {
                 // Stream ended
                 break;
