@@ -418,12 +418,14 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: postgres
         options: >-
+          --name postgres
           --health-cmd pg_isready
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
         ports:
           - 5432:5432
+        # no host volumes to avoid root-owned directories pre-checkout
 
     steps:
       - uses: actions/checkout@v5
@@ -454,7 +456,21 @@ jobs:
       - name: Configure PostgreSQL for logical replication
         run: |
           PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d postgres -c "ALTER SYSTEM SET wal_level = 'logical';"
+          PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d postgres -c "ALTER SYSTEM SET max_wal_senders = 16;"
+          PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d postgres -c "ALTER SYSTEM SET max_replication_slots = 16;"
           PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d postgres -c "SELECT pg_reload_conf();"
+
+      - name: Restart PostgreSQL to apply wal_level
+        run: |
+          docker restart postgres
+          for i in {1..10}; do
+            if pg_isready -h localhost -p 5432 -U postgres; then
+              echo "PostgreSQL restarted and ready!"
+              break
+            fi
+            echo "Waiting for PostgreSQL after restart..."
+            sleep 2
+          done
 
       - name: Run PostgreSQL integration tests
         timeout-minutes: 10
