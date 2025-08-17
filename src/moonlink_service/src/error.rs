@@ -34,7 +34,7 @@ impl From<ArrowError> for Error {
             _ => ErrorStatus::Permanent,
         };
 
-        Error::Arrow(ErrorStruct::new(format!("Arrow error: {source}"), status).with_source(source))
+        Error::Arrow(ErrorStruct::new("Arrow error".to_string(), status).with_source(source))
     }
 }
 
@@ -42,7 +42,7 @@ impl From<moonlink_backend::Error> for Error {
     #[track_caller]
     fn from(source: moonlink_backend::Error) -> Self {
         Error::Backend(
-            ErrorStruct::new(format!("Backend error: {source}"), ErrorStatus::Permanent)
+            ErrorStruct::new("Backend error".to_string(), ErrorStatus::Permanent)
                 .with_source(source),
         )
     }
@@ -67,7 +67,7 @@ impl From<io::Error> for Error {
             _ => ErrorStatus::Permanent,
         };
 
-        Error::Io(ErrorStruct::new(format!("IO error: {source}"), status).with_source(source))
+        Error::Io(ErrorStruct::new("IO error".to_string(), status).with_source(source))
     }
 }
 
@@ -76,7 +76,7 @@ impl From<moonlink_rpc::Error> for Error {
     fn from(source: moonlink_rpc::Error) -> Self {
         Error::Rpc(
             ErrorStruct::new(
-                format!("RPC error: {source}"),
+                "RPC error".to_string(),
                 match &source {
                     moonlink_rpc::Error::Io(err) => err.status,
                     moonlink_rpc::Error::Decode(err) => err.status,
@@ -93,7 +93,7 @@ impl From<tokio::task::JoinError> for Error {
     #[track_caller]
     fn from(source: tokio::task::JoinError) -> Self {
         Error::TaskJoin(
-            ErrorStruct::new(format!("Join error: {source}"), ErrorStatus::Permanent)
+            ErrorStruct::new("Join error".to_string(), ErrorStatus::Permanent)
                 .with_source(source),
         )
     }
