@@ -1,4 +1,5 @@
 use arrow_schema::ArrowError;
+use moonlink_error::io_error_utils::get_io_error_status;
 use moonlink_error::{ErrorStatus, ErrorStruct};
 use std::io;
 use std::result;
@@ -51,22 +52,7 @@ impl From<moonlink_backend::Error> for Error {
 impl From<io::Error> for Error {
     #[track_caller]
     fn from(source: io::Error) -> Self {
-        let status = match source.kind() {
-            io::ErrorKind::TimedOut
-            | io::ErrorKind::Interrupted
-            | io::ErrorKind::WouldBlock
-            | io::ErrorKind::ConnectionRefused
-            | io::ErrorKind::ConnectionAborted
-            | io::ErrorKind::ConnectionReset
-            | io::ErrorKind::BrokenPipe
-            | io::ErrorKind::NetworkDown
-            | io::ErrorKind::ResourceBusy
-            | io::ErrorKind::QuotaExceeded => ErrorStatus::Temporary,
-
-            // All other errors are permanent
-            _ => ErrorStatus::Permanent,
-        };
-
+        let status = get_io_error_status(&source);
         Error::Io(ErrorStruct::new("IO error".to_string(), status).with_source(source))
     }
 }
@@ -93,8 +79,7 @@ impl From<tokio::task::JoinError> for Error {
     #[track_caller]
     fn from(source: tokio::task::JoinError) -> Self {
         Error::TaskJoin(
-            ErrorStruct::new("Join error".to_string(), ErrorStatus::Permanent)
-                .with_source(source),
+            ErrorStruct::new("Join error".to_string(), ErrorStatus::Permanent).with_source(source),
         )
     }
 }
