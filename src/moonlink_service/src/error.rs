@@ -1,9 +1,7 @@
 use arrow_schema::ArrowError;
 use moonlink_error::{ErrorStatus, ErrorStruct};
 use std::io;
-use std::panic::Location;
 use std::result;
-use std::sync::Arc;
 use thiserror::Error;
 
 #[derive(Clone, Debug, Error)]
@@ -36,24 +34,17 @@ impl From<ArrowError> for Error {
             _ => ErrorStatus::Permanent,
         };
 
-        Error::Arrow(ErrorStruct {
-            message: format!("Arrow error: {source}"),
-            status,
-            source: Some(Arc::new(source.into())),
-            location: Some(Location::caller()),
-        })
+        Error::Arrow(ErrorStruct::new(format!("Arrow error: {source}"), status).with_source(source))
     }
 }
 
 impl From<moonlink_backend::Error> for Error {
     #[track_caller]
     fn from(source: moonlink_backend::Error) -> Self {
-        Error::Backend(ErrorStruct {
-            message: format!("Backend error: {source}"),
-            status: ErrorStatus::Permanent,
-            source: Some(Arc::new(source.into())),
-            location: Some(Location::caller()),
-        })
+        Error::Backend(
+            ErrorStruct::new(format!("Backend error: {source}"), ErrorStatus::Permanent)
+                .with_source(source),
+        )
     }
 }
 
@@ -76,40 +67,34 @@ impl From<io::Error> for Error {
             _ => ErrorStatus::Permanent,
         };
 
-        Error::Io(ErrorStruct {
-            message: format!("IO error: {source}"),
-            status,
-            source: Some(Arc::new(source.into())),
-            location: Some(Location::caller()),
-        })
+        Error::Io(ErrorStruct::new(format!("IO error: {source}"), status).with_source(source))
     }
 }
 
 impl From<moonlink_rpc::Error> for Error {
     #[track_caller]
     fn from(source: moonlink_rpc::Error) -> Self {
-        Error::Rpc(ErrorStruct {
-            message: format!("RPC error: {source}"),
-            status: match &source {
-                moonlink_rpc::Error::Io(err) => err.status,
-                moonlink_rpc::Error::Decode(err) => err.status,
-                moonlink_rpc::Error::Encode(err) => err.status,
-                moonlink_rpc::Error::PacketTooLong(err) => err.status,
-            },
-            source: Some(Arc::new(source.into())),
-            location: Some(Location::caller()),
-        })
+        Error::Rpc(
+            ErrorStruct::new(
+                format!("RPC error: {source}"),
+                match &source {
+                    moonlink_rpc::Error::Io(err) => err.status,
+                    moonlink_rpc::Error::Decode(err) => err.status,
+                    moonlink_rpc::Error::Encode(err) => err.status,
+                    moonlink_rpc::Error::PacketTooLong(err) => err.status,
+                },
+            )
+            .with_source(source),
+        )
     }
 }
 
 impl From<tokio::task::JoinError> for Error {
     #[track_caller]
     fn from(source: tokio::task::JoinError) -> Self {
-        Error::TaskJoin(ErrorStruct {
-            message: format!("Join error: {source}"),
-            status: ErrorStatus::Permanent,
-            source: Some(Arc::new(source.into())),
-            location: Some(Location::caller()),
-        })
+        Error::TaskJoin(
+            ErrorStruct::new(format!("Join error: {source}"), ErrorStatus::Permanent)
+                .with_source(source),
+        )
     }
 }
