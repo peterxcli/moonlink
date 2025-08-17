@@ -11,6 +11,7 @@ use crate::storage::snapshot_options::SnapshotOption;
 use crate::storage::wal::test_utils::WAL_TEST_TABLE_ID;
 use crate::table_handler::table_handler_state::MaintenanceProcessStatus;
 use crate::table_handler::table_handler_state::TableHandlerState;
+use crate::Error;
 use crate::FileSystemAccessor;
 use crate::WalConfig;
 use iceberg::{Error as IcebergError, ErrorKind};
@@ -519,7 +520,7 @@ async fn test_table_recovery() {
         iceberg_table_config.clone(),
         test_mooncake_table_config(&context),
         wal_manager,
-        ObjectStorageCache::default_for_test(&context.temp_dir),
+        create_test_object_storage_cache(&context.temp_dir),
         create_test_filesystem_accessor(&iceberg_table_config),
     )
     .await
@@ -545,10 +546,10 @@ async fn test_snapshot_load_failure() {
         .times(1)
         .returning(|| {
             Box::pin(async move {
-                Err(IcebergError::new(
+                Err(Error::from(IcebergError::new(
                     ErrorKind::Unexpected,
                     "Intended error for unit test",
-                ))
+                )))
             })
         });
 
@@ -558,7 +559,7 @@ async fn test_snapshot_load_failure() {
     let table = MooncakeTable::new_with_table_manager(
         table_metadata,
         Box::new(mock_table_manager),
-        ObjectStorageCache::default_for_test(&temp_dir),
+        create_test_object_storage_cache(&temp_dir),
         FileSystemAccessor::default_for_test(&temp_dir),
         wal_manager,
     )
@@ -601,10 +602,10 @@ async fn test_snapshot_store_failure() {
         .times(1)
         .returning(|_, _| {
             Box::pin(async move {
-                Err(IcebergError::new(
+                Err(Error::from(IcebergError::new(
                     ErrorKind::Unexpected,
                     "Intended error for unit test",
-                ))
+                )))
             })
         });
 
@@ -614,7 +615,7 @@ async fn test_snapshot_store_failure() {
     let mut table = MooncakeTable::new_with_table_manager(
         table_metadata,
         Box::new(mock_table_manager),
-        ObjectStorageCache::default_for_test(&temp_dir),
+        create_test_object_storage_cache(&temp_dir),
         FileSystemAccessor::default_for_test(&temp_dir),
         wal_manager,
     )
@@ -2569,7 +2570,7 @@ async fn test_disk_slice_write_failure() -> Result<()> {
     let mut table = MooncakeTable::new_with_table_manager(
         table_metadata,
         Box::new(mock_table_manager),
-        ObjectStorageCache::default_for_test(&temp_dir),
+        create_test_object_storage_cache(&temp_dir),
         FileSystemAccessor::default_for_test(&temp_dir),
         wal_manager,
     )
