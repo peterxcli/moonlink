@@ -115,19 +115,9 @@ async fn test_composite_types_in_cdc_stream() {
     // Create publication
     resources
         .client()
-        .simple_query(&format!("DROP PUBLICATION IF EXISTS {publication};"))
-        .await
-        .unwrap();
-    resources
-        .client()
         .simple_query(&format!(
             "CREATE PUBLICATION {publication} FOR TABLE {table_name};"
         ))
-        .await
-        .unwrap();
-    resources
-        .client()
-        .simple_query(&format!("ALTER TABLE {table_name} REPLICA IDENTITY FULL;"))
         .await
         .unwrap();
     resources
