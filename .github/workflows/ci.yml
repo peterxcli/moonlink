@@ -456,8 +456,6 @@ jobs:
       - name: Configure PostgreSQL for logical replication
         run: |
           PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d postgres -c "ALTER SYSTEM SET wal_level = 'logical';"
-          PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d postgres -c "ALTER SYSTEM SET max_wal_senders = 16;"
-          PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d postgres -c "ALTER SYSTEM SET max_replication_slots = 16;"
           PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d postgres -c "SELECT pg_reload_conf();"
 
       - name: Restart PostgreSQL to apply wal_level
