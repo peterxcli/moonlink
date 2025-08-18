@@ -425,7 +425,6 @@ jobs:
           --health-retries 5
         ports:
           - 5432:5432
-        # no host volumes to avoid root-owned directories pre-checkout
 
     steps:
       - uses: actions/checkout@v5
