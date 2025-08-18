@@ -1,25 +1,11 @@
 #![cfg(feature = "connector-pg")]
 
+use super::test_utils::{setup_connection, TestResources};
 use crate::pg_replicate::clients::postgres::ReplicationClient;
 use crate::pg_replicate::conversions::text::TextFormatConverter;
 use crate::pg_replicate::table::{ColumnSchema, TableName};
 use serial_test::serial;
 use tokio_postgres::types::{Kind, Type};
-use tokio_postgres::{connect, NoTls};
-
-async fn setup_connection() -> tokio_postgres::Client {
-    // Use DATABASE_URL env var if set (for CI), otherwise use devcontainer default
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgresql://postgres:postgres@postgres:5432/postgres".to_string());
-
-    let (client, connection) = connect(&database_url, NoTls).await.unwrap();
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("Postgres connection error: {e}");
-        }
-    });
-    client
-}
 
 async fn get_table_id(client: &tokio_postgres::Client, table_name: &str) -> u32 {
     let query = format!(
@@ -40,9 +26,11 @@ async fn get_table_id(client: &tokio_postgres::Client, table_name: &str) -> u32 
 #[serial]
 async fn test_basic_composite_type() {
     let client = setup_connection().await;
+    let mut resources = TestResources::new(client);
 
     // Create basic composite type
-    client
+    resources
+        .client()
         .simple_query(
             "DROP TYPE IF EXISTS test_address CASCADE;
              CREATE TYPE test_address AS (street TEXT, city TEXT, zip INTEGER);
@@ -59,13 +47,18 @@ async fn test_basic_composite_type() {
         .await
         .unwrap();
 
-    let table_id = get_table_id(&client, "test_basic_composite").await;
+    // Register resources for cleanup
+    resources.add_type("test_address");
+    resources.add_table("test_basic_composite");
+
+    let table_id = get_table_id(resources.client(), "test_basic_composite").await;
     let table_name = TableName {
         schema: "public".to_string(),
         name: "test_basic_composite".to_string(),
     };
 
-    let replication_client = ReplicationClient::from_client(client);
+    // Create a separate client for ReplicationClient since it needs an owned Client
+    let replication_client = ReplicationClient::from_client(setup_connection().await);
     let schema = replication_client
         .get_table_schema(table_id, table_name, /*publication=*/ None)
         .await
@@ -98,9 +91,11 @@ async fn test_basic_composite_type() {
 #[serial]
 async fn test_nested_composite_types() {
     let client = setup_connection().await;
+    let mut resources = TestResources::new(client);
 
     // Create nested composite types
-    client
+    resources
+        .client()
         .simple_query(
             "DROP TYPE IF EXISTS test_point CASCADE;
              DROP TYPE IF EXISTS test_location CASCADE;
@@ -119,8 +114,14 @@ async fn test_nested_composite_types() {
         .await
         .unwrap();
 
-    let table_id = get_table_id(&client, "test_nested").await;
-    let replication_client = ReplicationClient::from_client(client);
+    // Register resources for cleanup
+    resources.add_type("test_point");
+    resources.add_type("test_location");
+    resources.add_table("test_nested");
+
+    let table_id = get_table_id(resources.client(), "test_nested").await;
+    // Create a separate client for ReplicationClient since it needs an owned Client
+    let replication_client = ReplicationClient::from_client(setup_connection().await);
     let schema = replication_client
         .get_table_schema(
             table_id,
@@ -161,9 +162,11 @@ async fn test_nested_composite_types() {
 #[serial]
 async fn test_array_of_composite_types() {
     let client = setup_connection().await;
+    let mut resources = TestResources::new(client);
 
     // Create composite type for array testing
-    client
+    resources
+        .client()
         .simple_query(
             "DROP TYPE IF EXISTS test_item CASCADE;
              CREATE TYPE test_item AS (name TEXT, value INTEGER);
@@ -180,8 +183,13 @@ async fn test_array_of_composite_types() {
         .await
         .unwrap();
 
-    let table_id = get_table_id(&client, "test_array_composite").await;
-    let replication_client = ReplicationClient::from_client(client);
+    // Register resources for cleanup
+    resources.add_type("test_item");
+    resources.add_table("test_array_composite");
+
+    let table_id = get_table_id(resources.client(), "test_array_composite").await;
+    // Create a separate client for ReplicationClient since it needs an owned Client
+    let replication_client = ReplicationClient::from_client(setup_connection().await);
     let schema = replication_client
         .get_table_schema(
             table_id,
@@ -228,9 +236,10 @@ async fn test_array_of_composite_types() {
 #[serial]
 async fn test_composite_with_nested_array() {
     let client = setup_connection().await;
+    let mut resources = TestResources::new(client);
 
     // Create composite type with array field
-    client
+    resources.client()
         .simple_query(
             "DROP TYPE IF EXISTS test_skill CASCADE;
              DROP TYPE IF EXISTS test_person CASCADE;
@@ -249,8 +258,14 @@ async fn test_composite_with_nested_array() {
         .await
         .unwrap();
 
-    let table_id = get_table_id(&client, "test_nested_array").await;
-    let replication_client = ReplicationClient::from_client(client);
+    // Register resources for cleanup
+    resources.add_type("test_skill");
+    resources.add_type("test_person");
+    resources.add_table("test_nested_array");
+
+    let table_id = get_table_id(resources.client(), "test_nested_array").await;
+    // Create a separate client for ReplicationClient since it needs an owned Client
+    let replication_client = ReplicationClient::from_client(setup_connection().await);
     let schema = replication_client
         .get_table_schema(
             table_id,
@@ -302,9 +317,10 @@ async fn test_composite_with_nested_array() {
 #[serial]
 async fn test_deeply_nested_composites() {
     let client = setup_connection().await;
+    let mut resources = TestResources::new(client);
 
     // Create deeply nested composite types (3+ levels)
-    client
+    resources.client()
         .simple_query(
             "DROP TYPE IF EXISTS test_coords CASCADE;
              DROP TYPE IF EXISTS test_address CASCADE;
@@ -328,8 +344,16 @@ async fn test_deeply_nested_composites() {
         .await
         .unwrap();
 
-    let table_id = get_table_id(&client, "test_deep").await;
-    let replication_client = ReplicationClient::from_client(client);
+    // Register resources for cleanup
+    resources.add_type("test_coords");
+    resources.add_type("test_address");
+    resources.add_type("test_location");
+    resources.add_type("test_venue");
+    resources.add_table("test_deep");
+
+    let table_id = get_table_id(resources.client(), "test_deep").await;
+    // Create a separate client for ReplicationClient since it needs an owned Client
+    let replication_client = ReplicationClient::from_client(setup_connection().await);
     let schema = replication_client
         .get_table_schema(
             table_id,
@@ -389,9 +413,10 @@ async fn test_deeply_nested_composites() {
 #[serial]
 async fn test_complex_mixed_nesting() {
     let client = setup_connection().await;
+    let mut resources = TestResources::new(client);
 
     // Test array of composites with nested arrays
-    client
+    resources.client()
         .simple_query(
             "DROP TYPE IF EXISTS test_tag CASCADE;
              DROP TYPE IF EXISTS test_meta CASCADE;
@@ -415,8 +440,15 @@ async fn test_complex_mixed_nesting() {
         .await
         .unwrap();
 
-    let table_id = get_table_id(&client, "test_mixed").await;
-    let replication_client = ReplicationClient::from_client(client);
+    // Register resources for cleanup
+    resources.add_type("test_tag");
+    resources.add_type("test_meta");
+    resources.add_type("test_doc");
+    resources.add_table("test_mixed");
+
+    let table_id = get_table_id(resources.client(), "test_mixed").await;
+    // Create a separate client for ReplicationClient since it needs an owned Client
+    let replication_client = ReplicationClient::from_client(setup_connection().await);
     let schema = replication_client
         .get_table_schema(
             table_id,
