@@ -90,9 +90,7 @@ pub async fn start_with_config(config: ServiceConfig) -> Result<()> {
     )
     .await?;
 
-    if config.rest_api_port.is_some() {
-        backend.initialize_event_api().await?;
-    }
+    backend.initialize_event_api().await?;
 
     let backend = Arc::new(backend);
 
