@@ -232,7 +232,7 @@ where
                 };
 
                 let request = EventRequest {
-                    table_name: src_table,
+                    src_table_name: src_table,
                     operation: op,
                     payload,
                     timestamp: SystemTime::now(),
