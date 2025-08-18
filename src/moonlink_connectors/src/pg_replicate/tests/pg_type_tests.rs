@@ -1,9 +1,8 @@
 #![cfg(feature = "connector-pg")]
 
-use super::test_utils::{setup_connection, TestResources};
-use crate::pg_replicate::clients::postgres::ReplicationClient;
+use super::test_utils::{create_replication_client, setup_connection, TestResources};
 use crate::pg_replicate::conversions::text::TextFormatConverter;
-use crate::pg_replicate::table::{ColumnSchema, TableName};
+use crate::pg_replicate::table::TableName;
 use serial_test::serial;
 use tokio_postgres::types::{Kind, Type};
 
@@ -57,8 +56,7 @@ async fn test_basic_composite_type() {
         name: "test_basic_composite".to_string(),
     };
 
-    // Create a separate client for ReplicationClient since it needs an owned Client
-    let replication_client = ReplicationClient::from_client(setup_connection().await);
+    let replication_client = create_replication_client().await;
     let schema = replication_client
         .get_table_schema(table_id, table_name, /*publication=*/ None)
         .await
@@ -120,8 +118,7 @@ async fn test_nested_composite_types() {
     resources.add_table("test_nested");
 
     let table_id = get_table_id(resources.client(), "test_nested").await;
-    // Create a separate client for ReplicationClient since it needs an owned Client
-    let replication_client = ReplicationClient::from_client(setup_connection().await);
+    let replication_client = create_replication_client().await;
     let schema = replication_client
         .get_table_schema(
             table_id,
@@ -188,8 +185,7 @@ async fn test_array_of_composite_types() {
     resources.add_table("test_array_composite");
 
     let table_id = get_table_id(resources.client(), "test_array_composite").await;
-    // Create a separate client for ReplicationClient since it needs an owned Client
-    let replication_client = ReplicationClient::from_client(setup_connection().await);
+    let replication_client = create_replication_client().await;
     let schema = replication_client
         .get_table_schema(
             table_id,
@@ -264,8 +260,7 @@ async fn test_composite_with_nested_array() {
     resources.add_table("test_nested_array");
 
     let table_id = get_table_id(resources.client(), "test_nested_array").await;
-    // Create a separate client for ReplicationClient since it needs an owned Client
-    let replication_client = ReplicationClient::from_client(setup_connection().await);
+    let replication_client = create_replication_client().await;
     let schema = replication_client
         .get_table_schema(
             table_id,
@@ -352,8 +347,7 @@ async fn test_deeply_nested_composites() {
     resources.add_table("test_deep");
 
     let table_id = get_table_id(resources.client(), "test_deep").await;
-    // Create a separate client for ReplicationClient since it needs an owned Client
-    let replication_client = ReplicationClient::from_client(setup_connection().await);
+    let replication_client = create_replication_client().await;
     let schema = replication_client
         .get_table_schema(
             table_id,
@@ -447,8 +441,7 @@ async fn test_complex_mixed_nesting() {
     resources.add_table("test_mixed");
 
     let table_id = get_table_id(resources.client(), "test_mixed").await;
-    // Create a separate client for ReplicationClient since it needs an owned Client
-    let replication_client = ReplicationClient::from_client(setup_connection().await);
+    let replication_client = create_replication_client().await;
     let schema = replication_client
         .get_table_schema(
             table_id,

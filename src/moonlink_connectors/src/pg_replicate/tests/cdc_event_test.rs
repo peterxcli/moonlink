@@ -1,6 +1,6 @@
 #![cfg(feature = "connector-pg")]
 
-use super::test_utils::{database_url, setup_connection, TestResources};
+use super::test_utils::{create_replication_client, database_url, setup_connection, TestResources};
 use crate::pg_replicate::clients::postgres::ReplicationClient;
 use crate::pg_replicate::conversions::Cell;
 use crate::pg_replicate::postgres_source::{CdcStreamConfig, PostgresSource};
@@ -13,18 +13,6 @@ use tokio_postgres::{connect, NoTls};
 
 const STREAM_NEXT_TIMEOUT_MS: u64 = 100;
 const EVENT_COLLECTION_SECS: u64 = 5;
-
-async fn create_replication_client() -> ReplicationClient {
-    let url = database_url();
-    let (mut replication_client, connection) =
-        ReplicationClient::connect_no_tls(&url, true).await.unwrap();
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("Replication connection error: {e}");
-        }
-    });
-    replication_client
-}
 
 async fn fetch_table_schema(publication: &str, table_name_str: &str) -> TableSchema {
     let url = database_url();
@@ -428,6 +416,4 @@ async fn test_composite_types_in_cdc_stream() {
         }
         other => panic!("unexpected addr_array cell: {:?}", other),
     }
-
-    resources.cleanup().await;
 }

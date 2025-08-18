@@ -1,3 +1,4 @@
+use crate::pg_replicate::ReplicationClient;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_postgres::{connect, NoTls};
@@ -19,24 +20,39 @@ pub async fn setup_connection() -> tokio_postgres::Client {
     client
 }
 
+pub async fn create_replication_client() -> ReplicationClient {
+    let url = database_url();
+    let (mut replication_client, connection) =
+        ReplicationClient::connect_no_tls(&url, true).await.unwrap();
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            eprintln!("Replication connection error: {e}");
+        }
+    });
+    replication_client
+}
+
 async fn drop_publication(client: &tokio_postgres::Client, publication: &str) {
     let _ = client
         .simple_query(&format!(
             "DROP PUBLICATION IF EXISTS {publication} CASCADE;"
         ))
-        .await;
+        .await
+        .unwrap();
 }
 
 async fn drop_table(client: &tokio_postgres::Client, table_name: &str) {
     let _ = client
         .simple_query(&format!("DROP TABLE IF EXISTS {table_name} CASCADE;"))
-        .await;
+        .await
+        .unwrap();
 }
 
 async fn drop_type(client: &tokio_postgres::Client, type_name: &str) {
     let _ = client
         .simple_query(&format!("DROP TYPE IF EXISTS {type_name} CASCADE;"))
-        .await;
+        .await
+        .unwrap();
 }
 
 async fn drop_replication_slot(client: &tokio_postgres::Client, slot_name: &str) {
@@ -45,7 +61,8 @@ async fn drop_replication_slot(client: &tokio_postgres::Client, slot_name: &str)
             "SELECT pg_drop_replication_slot('{slot}');",
             slot = slot_name
         ))
-        .await;
+        .await
+        .unwrap();
 }
 
 pub struct TestResources {
