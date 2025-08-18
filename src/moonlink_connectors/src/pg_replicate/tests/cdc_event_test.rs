@@ -1,5 +1,6 @@
 #![cfg(feature = "connector-pg")]
 
+use super::test_utils::{database_url, setup_connection, TestResources};
 use crate::pg_replicate::clients::postgres::ReplicationClient;
 use crate::pg_replicate::conversions::Cell;
 use crate::pg_replicate::postgres_source::{CdcStreamConfig, PostgresSource};
@@ -7,122 +8,11 @@ use crate::pg_replicate::table::{TableName, TableSchema};
 use futures::StreamExt;
 use serial_test::serial;
 use std::time::Duration;
+use tokio::sync::mpsc;
 use tokio_postgres::{connect, NoTls};
 
-const DEFAULT_DB_URL: &str = "postgresql://postgres:postgres@postgres:5432/postgres";
-const REPLICATION_SLOT: &str = "test_composite_slot";
-const PUBLICATION: &str = "test_composite_pub";
-const TABLE_NAME: &str = "test_composite_cdc";
 const STREAM_NEXT_TIMEOUT_MS: u64 = 100;
 const EVENT_COLLECTION_SECS: u64 = 5;
-
-fn database_url() -> String {
-    std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DB_URL.to_string())
-}
-
-async fn setup_connection() -> tokio_postgres::Client {
-    let database_url = database_url();
-    let (client, connection) = connect(&database_url, NoTls).await.unwrap();
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("Postgres connection error: {e}");
-        }
-    });
-    client
-}
-
-async fn setup_composite_test_data(client: &tokio_postgres::Client) {
-    // Clean up existing objects
-    client
-        .simple_query(
-            "DROP TABLE IF EXISTS test_composite_cdc CASCADE;
-             DROP TYPE IF EXISTS test_address CASCADE;
-             DROP TYPE IF EXISTS test_point CASCADE;
-             DROP TYPE IF EXISTS test_location CASCADE;
-             DROP TYPE IF EXISTS test_person CASCADE;",
-        )
-        .await
-        .unwrap();
-
-    // Create composite types
-    client
-        .simple_query(
-            "CREATE TYPE test_address AS (street TEXT, city TEXT, zip INTEGER);
-             CREATE TYPE test_point AS (x FLOAT8, y FLOAT8);
-             CREATE TYPE test_location AS (name TEXT, point test_point);
-             CREATE TYPE test_person AS (name TEXT, addresses test_address[], location test_location);",
-        )
-        .await
-        .unwrap();
-
-    // Create test table
-    client
-        .simple_query(
-            "CREATE TABLE test_composite_cdc (
-                 id INTEGER PRIMARY KEY,
-                 basic_addr test_address,
-                 nested_loc test_location,
-                 complex_person test_person,
-                 addr_array test_address[]
-             );",
-        )
-        .await
-        .unwrap();
-
-    // Ensure replica identity is FULL so replication uses full row images
-    client
-        .simple_query("ALTER TABLE test_composite_cdc REPLICA IDENTITY FULL;")
-        .await
-        .unwrap();
-
-    // Create publication
-    client
-        .simple_query("DROP PUBLICATION IF EXISTS test_composite_pub;")
-        .await
-        .unwrap();
-    client
-        .simple_query("CREATE PUBLICATION test_composite_pub FOR TABLE test_composite_cdc;")
-        .await
-        .unwrap();
-}
-
-async fn insert_test_data(client: &tokio_postgres::Client) {
-    client
-        .simple_query(
-            "INSERT INTO test_composite_cdc VALUES 
-             (1, 
-              ROW('123 Main St', 'NYC', 10001)::test_address,
-              ROW('Home', ROW(40.7, -74.0)::test_point)::test_location,
-              ROW('Alice', 
-                  ARRAY[ROW('123 Main St', 'NYC', 10001)::test_address, 
-                        ROW('456 Oak Ave', 'LA', 90210)::test_address],
-                  ROW('Work', ROW(34.0, -118.0)::test_point)::test_location
-              )::test_person,
-              ARRAY[ROW('789 Pine St', 'Chicago', 60601)::test_address,
-                    ROW('321 Elm St', 'Boston', 02101)::test_address]
-             );",
-        )
-        .await
-        .unwrap();
-}
-
-async fn ensure_logical_replication(client: &tokio_postgres::Client) {
-    client
-        .simple_query("ALTER SYSTEM SET wal_level = 'logical';")
-        .await
-        .unwrap();
-    client
-        .simple_query("SELECT pg_reload_conf();")
-        .await
-        .unwrap();
-}
-
-async fn drop_replication_slot_if_exists(client: &tokio_postgres::Client, slot_name: &str) {
-    let query = format!("SELECT pg_drop_replication_slot('{slot}') WHERE EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = '{slot}');", slot = slot_name);
-    if let Err(e) = client.simple_query(&query).await {
-        eprintln!("drop_replication_slot_if_exists error: {e}");
-    }
-}
 
 async fn create_replication_client() -> ReplicationClient {
     let url = database_url();
@@ -136,7 +26,7 @@ async fn create_replication_client() -> ReplicationClient {
     replication_client
 }
 
-async fn fetch_table_schema_for_test_table(publication: &str) -> TableSchema {
+async fn fetch_table_schema(publication: &str, table_name_str: &str) -> TableSchema {
     let url = database_url();
     let (schema_pg_client, schema_conn) = connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move {
@@ -147,7 +37,7 @@ async fn fetch_table_schema_for_test_table(publication: &str) -> TableSchema {
     let mut schema_client = ReplicationClient::from_client(schema_pg_client);
     let table_name = TableName {
         schema: "public".to_string(),
-        name: TABLE_NAME.to_string(),
+        name: table_name_str.to_string(),
     };
     let src_table_id = schema_client
         .get_src_table_id(&table_name)
@@ -160,7 +50,8 @@ async fn fetch_table_schema_for_test_table(publication: &str) -> TableSchema {
         .unwrap()
 }
 
-fn spawn_background_changes(database_url: String) {
+fn spawn_sql_executor(database_url: String) -> mpsc::UnboundedSender<String> {
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
     tokio::spawn(async move {
         let (bg_client, bg_connection) = connect(&database_url, NoTls).await.unwrap();
         tokio::spawn(async move {
@@ -169,82 +60,108 @@ fn spawn_background_changes(database_url: String) {
             }
         });
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let _ = bg_client
-            .simple_query(
-                "INSERT INTO test_composite_cdc VALUES 
-                 (2, ROW('999 Test St', 'Test City', 12345)::test_address, NULL, NULL, NULL);",
-            )
-            .await
-            .map_err(|e| {
-                eprintln!("background INSERT id=2 failed: {e}");
-                e
-            })
-            .ok();
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let _ = bg_client
-            .simple_query(
-                "UPDATE test_composite_cdc 
-                 SET basic_addr = ROW('Updated St', 'Updated City', 54321)::test_address 
-                 WHERE id = 1;",
-            )
-            .await
-            .map_err(|e| {
-                eprintln!("background UPDATE id=1 failed: {e}");
-                e
-            })
-            .ok();
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let _ = bg_client
-            .simple_query(
-                "INSERT INTO test_composite_cdc VALUES
-                 (3,
-                  ROW('A St', 'A City', 11111)::test_address,
-                  ROW('Place', ROW(1.5, 2.5)::test_point)::test_location,
-                  ROW('Bob',
-                      ARRAY[ROW('X Ave', 'X City', 22222)::test_address,
-                            ROW('Y Blvd', 'Y City', 33333)::test_address],
-                      ROW('Office', ROW(3.25, 4.75)::test_point)::test_location
-                  )::test_person,
-                  ARRAY[ROW('Z Rd', 'Z City', 44444)::test_address,
-                        ROW('W Way', 'W City', 55555)::test_address]
-                 );",
-            )
-            .await
-            .map_err(|e| {
-                eprintln!("background INSERT id=3 failed: {e}");
-                e
-            })
-            .ok();
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let _ = bg_client
-            .simple_query("DELETE FROM test_composite_cdc WHERE id = 2;")
-            .await
-            .map_err(|e| {
-                eprintln!("background DELETE id=2 failed: {e}");
-                e
-            })
-            .ok();
+        while let Some(sql) = rx.recv().await {
+            if let Err(e) = bg_client.simple_query(&sql).await {
+                eprintln!("background SQL failed: {e}; sql: {sql}");
+            }
+        }
     });
+    tx
 }
 
 #[tokio::test]
 #[serial]
 async fn test_composite_types_in_cdc_stream() {
     let client = setup_connection().await;
-    setup_composite_test_data(&client).await;
-    ensure_logical_replication(&client).await;
-    insert_test_data(&client).await;
+    // Per-test dynamic names
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let table_name = format!("test_composite_cdc_{suffix}");
+    let publication = format!("test_composite_pub_{suffix}");
+    let slot_name = format!("test_composite_slot_{suffix}");
+
+    let mut resources = TestResources::new(client);
+    resources.add_table(table_name.clone());
+    resources.add_publication(publication.clone());
+    resources.add_slot(slot_name.clone());
+
+    // Create composite types
+    resources.client()
+        .simple_query(
+            "CREATE TYPE test_address AS (street TEXT, city TEXT, zip INTEGER);
+             CREATE TYPE test_point AS (x FLOAT8, y FLOAT8);
+             CREATE TYPE test_location AS (name TEXT, point test_point);
+             CREATE TYPE test_person AS (name TEXT, addresses test_address[], location test_location);",
+        )
+        .await
+        .unwrap();
+    resources.add_type("test_person");
+    resources.add_type("test_location");
+    resources.add_type("test_point");
+    resources.add_type("test_address");
+
+    // Create test table
+    resources
+        .client()
+        .simple_query(&format!(
+            "CREATE TABLE {table_name} (
+                 id INTEGER PRIMARY KEY,
+                 basic_addr test_address,
+                 nested_loc test_location,
+                 complex_person test_person,
+                 addr_array test_address[]
+             );"
+        ))
+        .await
+        .unwrap();
+
+    // Ensure replica identity is FULL so replication uses full row images
+    resources
+        .client()
+        .simple_query(&format!("ALTER TABLE {table_name} REPLICA IDENTITY FULL;"))
+        .await
+        .unwrap();
+
+    // Create publication
+    resources
+        .client()
+        .simple_query(&format!("DROP PUBLICATION IF EXISTS {publication};"))
+        .await
+        .unwrap();
+    resources
+        .client()
+        .simple_query(&format!(
+            "CREATE PUBLICATION {publication} FOR TABLE {table_name};"
+        ))
+        .await
+        .unwrap();
+    resources
+        .client()
+        .simple_query(&format!("ALTER TABLE {table_name} REPLICA IDENTITY FULL;"))
+        .await
+        .unwrap();
+    resources
+        .client()
+        .simple_query(&format!(
+            "INSERT INTO {table_name} VALUES 
+             (1, 
+              ROW('123 Main St', 'NYC', 10001)::test_address,
+              ROW('Home', ROW(40.7, -74.0)::test_point)::test_location,
+              ROW('Alice', 
+                  ARRAY[ROW('123 Main St', 'NYC', 10001)::test_address, 
+                        ROW('456 Oak Ave', 'LA', 90210)::test_address],
+                  ROW('Work', ROW(34.0, -118.0)::test_point)::test_location
+              )::test_person,
+              ARRAY[ROW('789 Pine St', 'Chicago', 60601)::test_address,
+                    ROW('321 Elm St', 'Boston', 02101)::test_address]
+             );"
+        ))
+        .await
+        .unwrap();
 
     let mut replication_client = create_replication_client().await;
-    drop_replication_slot_if_exists(&client, REPLICATION_SLOT).await;
 
     // Create replication slot using the replication client
     replication_client
@@ -253,7 +170,7 @@ async fn test_composite_types_in_cdc_stream() {
         .unwrap();
     let slot_info = tokio::time::timeout(
         Duration::from_secs(10),
-        replication_client.get_or_create_slot(REPLICATION_SLOT),
+        replication_client.get_or_create_slot(&slot_name),
     )
     .await
     .expect("timeout waiting for get_or_create_slot")
@@ -264,8 +181,8 @@ async fn test_composite_types_in_cdc_stream() {
 
     // Create CDC stream configuration
     let cdc_config = CdcStreamConfig {
-        publication: PUBLICATION.to_string(),
-        slot_name: REPLICATION_SLOT.to_string(),
+        publication: publication.clone(),
+        slot_name: slot_name.clone(),
         confirmed_flush_lsn: slot_info.confirmed_flush_lsn,
     };
 
@@ -279,13 +196,51 @@ async fn test_composite_types_in_cdc_stream() {
     .expect("create_cdc_stream failed");
 
     // Fetch and add the table schema so composite parsing works
-    let table_schema = fetch_table_schema_for_test_table(PUBLICATION).await;
+    let table_schema = fetch_table_schema(&publication, &table_name).await;
     use std::pin::Pin;
     let mut pinned_stream = Box::pin(cdc_stream);
     pinned_stream.as_mut().add_table_schema(table_schema);
 
-    // Start a background task to make changes to the table
-    spawn_background_changes(database_url());
+    // Start a background SQL executor and submit changes via channel
+    let sql_tx = spawn_sql_executor(database_url());
+    resources.set_sql_tx(sql_tx.clone());
+    // Developers can submit arbitrary SQL in desired order with optional delays between them
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    sql_tx
+        .send(format!(
+            "INSERT INTO {table_name} VALUES \
+             (2, ROW('999 Test St', 'Test City', 12345)::test_address, NULL, NULL, NULL);"
+        ))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    sql_tx
+        .send(format!(
+            "UPDATE {table_name} \
+             SET basic_addr = ROW('Updated St', 'Updated City', 54321)::test_address \
+             WHERE id = 1;"
+        ))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    sql_tx
+        .send(format!(
+            "INSERT INTO {table_name} VALUES\
+             (3,\
+              ROW('A St', 'A City', 11111)::test_address,\
+              ROW('Place', ROW(1.5, 2.5)::test_point)::test_location,\
+              ROW('Bob',\
+                  ARRAY[ROW('X Ave', 'X City', 22222)::test_address,\
+                        ROW('Y Blvd', 'Y City', 33333)::test_address],\
+                  ROW('Office', ROW(3.25, 4.75)::test_point)::test_location\
+              )::test_person,\
+              ARRAY[ROW('Z Rd', 'Z City', 44444)::test_address,\
+                    ROW('W Way', 'W City', 55555)::test_address]\
+             );"
+        ))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    sql_tx
+        .send(format!("DELETE FROM {table_name} WHERE id = 2;"))
+        .unwrap();
 
     // Collect CDC events for a limited time
     let mut events = Vec::new();
@@ -314,13 +269,12 @@ async fn test_composite_types_in_cdc_stream() {
         }
     }
 
-    // Verify we received some events
     assert!(!events.is_empty(), "No CDC events were received");
 
-    // Validate parsed values via conversion layer
     use crate::pg_replicate::conversions::cdc_event::CdcEvent;
 
-    // Find insert for id=2 and verify composite fields
+    // the events might include other types of events, eg. BEGIN, PrimaryKeepAlive, etc.
+    // Filter & find insert for id=2
     let inserted_row = events
         .iter()
         .find_map(|e| {
@@ -474,4 +428,6 @@ async fn test_composite_types_in_cdc_stream() {
         }
         other => panic!("unexpected addr_array cell: {:?}", other),
     }
+
+    resources.cleanup().await;
 }
