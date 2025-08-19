@@ -9,6 +9,8 @@ use crate::storage::cache::object_storage::cache_handle::NonEvictableHandle;
 use crate::storage::filesystem::accessor::base_filesystem_accessor::BaseFileSystemAccess;
 use crate::storage::storage_utils::TableUniqueFileId;
 use crate::Result;
+#[cfg(test)]
+use mockall::*;
 use smallvec::SmallVec;
 
 pub type InlineEvictedFiles = SmallVec<[String; 1]>;
@@ -28,6 +30,7 @@ pub struct CacheEntry {
 }
 
 #[async_trait]
+#[cfg_attr(test, automock)]
 pub trait CacheTrait: std::fmt::Debug + Send + Sync {
     /// Import cache entry to the cache. If there's no enough disk space, panic directly.
     /// Precondition: the file is not managed by cache.
