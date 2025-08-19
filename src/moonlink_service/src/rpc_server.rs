@@ -205,7 +205,7 @@ where
                         table,
                         src_table,
                         REST_API_URI.to_string(),
-                        "{}".to_string(),
+                        /*table_config=*/"{}".to_string(),
                         Some(arrow_schema),
                     )
                     .await?;
