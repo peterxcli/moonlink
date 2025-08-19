@@ -123,6 +123,7 @@ impl ReadOutput {
                                     let _ = tokio::fs::remove_file(&file).await;
                                 }
 
+                                // Best-effort notify deletions.
                                 if !evicted_files_to_delete_on_error.is_empty() {
                                     if let Some(table_notifier) = self.table_notifier.as_mut() {
                                         let _ = table_notifier
