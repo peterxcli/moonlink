@@ -230,12 +230,12 @@ mod tests {
             .await;
         assert!(res.is_ok());
 
-        // Receive exactly one notification and validate its content.
+        // Receive exactly one notification and validate its content strictly.
         if let Some(TableEvent::EvictedFilesToDelete { evicted_files }) = rx.recv().await {
-            assert!(evicted_files
-                .files
-                .iter()
-                .any(|f| f == "old_data_file_cache_file"));
+            assert_eq!(
+                evicted_files.files,
+                vec!["old_data_file_cache_file".to_string()]
+            );
         } else {
             panic!("expected a TableEvent::EvictedFilesToDelete notification");
         }
@@ -339,29 +339,24 @@ mod tests {
         );
 
         // Collect all deletion notifications from the channel and validate contents.
-        let mut notified_file_sets: Vec<Vec<String>> = Vec::new();
+        let mut notified_files: Vec<String> = Vec::new();
         while let Some(event) = rx.recv().await {
             if let TableEvent::EvictedFilesToDelete { evicted_files } = event {
-                notified_file_sets.push(evicted_files.files);
+                notified_files.extend(evicted_files.files);
             }
         }
 
-        // Should contain the associated file from error-path cleanup notification.
-        let expected_associated = get_fake_file_path(&associated_temp_dir);
-        assert!(notified_file_sets
-            .iter()
-            .any(|files| files.iter().any(|f| f == &expected_associated)));
+        // Expect exactly these three files regardless of ordering.
+        let mut notified_files_sorted = notified_files;
+        notified_files_sorted.sort();
 
-        // Should contain unreferenced object-storage data cache file path deleted on error.
-        let expected_data_cache_file = get_fake_file_path(&temp_dir);
-        assert!(notified_file_sets
-            .iter()
-            .any(|files| files.iter().any(|f| f == &expected_data_cache_file)));
+        let mut expected_files = vec![
+            get_fake_file_path(&associated_temp_dir),
+            get_fake_file_path(&temp_dir),
+            get_fake_file_path(&puffin_temp_dir),
+        ];
+        expected_files.sort();
 
-        // Should contain unreferenced puffin cache file path deleted on error.
-        let expected_puffin_cache_file = get_fake_file_path(&puffin_temp_dir);
-        assert!(notified_file_sets
-            .iter()
-            .any(|files| files.iter().any(|f| f == &expected_puffin_cache_file)));
+        assert_eq!(notified_files_sorted, expected_files);
     }
 }
