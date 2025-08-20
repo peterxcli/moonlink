@@ -56,6 +56,21 @@ pub struct ReadOutput {
 }
 
 impl ReadOutput {
+    /// Helper to notify evicted files if non-empty.
+    async fn notify_evicted_files(&mut self, files: Vec<String>) {
+        if files.is_empty() {
+            return;
+        }
+        self.table_notifier
+            .as_mut()
+            .unwrap()
+            .send(TableEvent::EvictedFilesToDelete {
+                evicted_files: EvictedFiles { files },
+            })
+            .await
+            .unwrap();
+    }
+
     /// Resolve all remote filepaths and convert into [`ReadState`] for query usage.
     ///
     /// TODO(hjiang): Parallelize download and pin.
@@ -66,7 +81,8 @@ impl ReadOutput {
         // Resolve remote data files.
         let mut resolved_data_files = Vec::with_capacity(self.data_file_paths.len());
         let mut cache_handles = vec![];
-        for cur_data_file in self.data_file_paths.clone().into_iter() {
+        let data_file_paths = std::mem::take(&mut self.data_file_paths);
+        for cur_data_file in data_file_paths.into_iter() {
             match cur_data_file {
                 DataFileForRead::TemporaryDataFile(file) => resolved_data_files.push(file),
                 DataFileForRead::RemoteFilePath((file_id, remote_filepath)) => {
@@ -88,21 +104,10 @@ impl ReadOutput {
                                 resolved_data_files.push(remote_filepath);
                             }
 
-                            if !files_to_delete.is_empty() {
-                                self.table_notifier
-                                    .as_mut()
-                                    .unwrap()
-                                    .send(TableEvent::EvictedFilesToDelete {
-                                        evicted_files: EvictedFiles {
-                                            files: files_to_delete.to_vec(),
-                                        },
-                                    })
-                                    .await
-                                    .unwrap();
-                            }
+                            self.notify_evicted_files(files_to_delete.into_vec()).await;
                         }
                         Err(e) => {
-                            self.handle_resolution_error(&mut cache_handles).await;
+                            self.handle_resolution_error(cache_handles).await;
                             return Err(e);
                         }
                     }
@@ -125,8 +130,8 @@ impl ReadOutput {
     }
 
     /// Handle cleanup and notifications when resolving remote filepaths fails.
-    async fn handle_resolution_error(&mut self, cache_handles: &mut Vec<NonEvictableHandle>) {
-        let mut evicted_files_to_delete_on_error = vec![];
+    async fn handle_resolution_error(&mut self, mut cache_handles: Vec<NonEvictableHandle>) {
+        let mut evicted_files_to_delete_on_error: Vec<String> = vec![];
         // Unpin all previously pinned cache handles before propagating error.
         for mut handle in cache_handles.drain(..) {
             let files_to_delete = handle.unreference().await;
@@ -139,33 +144,10 @@ impl ReadOutput {
             evicted_files_to_delete_on_error.extend(files_to_delete);
         }
 
-        // Best-effort delete any temporary associated files created for this read.
-        if !self.associated_files.is_empty() {
-            self.table_notifier
-                .as_mut()
-                .unwrap()
-                .send(TableEvent::EvictedFilesToDelete {
-                    evicted_files: EvictedFiles {
-                        files: self.associated_files.to_vec(),
-                    },
-                })
-                .await
-                .unwrap();
-        }
-
-        // Best-effort notify deletions.
-        if !evicted_files_to_delete_on_error.is_empty() {
-            self.table_notifier
-                .as_mut()
-                .unwrap()
-                .send(TableEvent::EvictedFilesToDelete {
-                    evicted_files: EvictedFiles {
-                        files: evicted_files_to_delete_on_error.to_vec(),
-                    },
-                })
-                .await
-                .unwrap();
-        }
+        // Include any temporary associated files created for this read, and notify once.
+        evicted_files_to_delete_on_error.extend(std::mem::take(&mut self.associated_files));
+        self.notify_evicted_files(evicted_files_to_delete_on_error)
+            .await;
     }
 }
 
