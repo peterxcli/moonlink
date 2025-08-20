@@ -179,9 +179,67 @@ mod tests {
         create_infinite_object_storage_cache, import_fake_cache_entry,
     };
     use crate::storage::mooncake_table::test_utils_commons::{get_fake_file_path, FAKE_FILE_ID};
+    use crate::table_notify::TableEvent;
     use mockall::Sequence;
     use smallvec::SmallVec;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_take_as_read_state_notifies_files_to_delete_on_success() {
+        // Setup a mock cache that returns files_to_delete on success.
+        let mut mock_cache = MockCacheTrait::new();
+        mock_cache
+            .expect_get_cache_entry()
+            .once()
+            .returning(|_, _, _| {
+                Box::pin(async move {
+                    let mut files_to_delete = SmallVec::new();
+                    files_to_delete.push("old_data_file_cache_file".to_string());
+                    Ok((None, files_to_delete))
+                })
+            });
+
+        // Filesystem accessor mock (unused, but required by signature).
+        let filesystem_accessor = MockBaseFileSystemAccess::new();
+
+        // Table notifier channel to capture deletion notifications.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TableEvent>(8);
+
+        // Prepare a remote path input.
+        let temp_dir = tempdir().unwrap();
+        let fake_remote_path = get_fake_file_path(&temp_dir);
+
+        // ReadOutput with a single remote file; happy path should notify files_to_delete.
+        let read_output = ReadOutput {
+            data_file_paths: vec![DataFileForRead::RemoteFilePath((
+                FAKE_FILE_ID,
+                fake_remote_path,
+            ))],
+            puffin_cache_handles: Vec::new(),
+            deletion_vectors: Vec::new(),
+            position_deletes: Vec::new(),
+            associated_files: Vec::new(),
+            table_notifier: Some(tx),
+            object_storage_cache: Some(Arc::new(mock_cache)),
+            filesystem_accessor: Some(Arc::new(filesystem_accessor)),
+        };
+
+        // Invoke and expect success.
+        let res = read_output
+            .take_as_read_state(Arc::new(|p: String| p))
+            .await;
+        assert!(res.is_ok());
+
+        // Receive exactly one notification and validate its content.
+        if let Some(TableEvent::EvictedFilesToDelete { evicted_files }) = rx.recv().await {
+            assert!(evicted_files
+                .files
+                .iter()
+                .any(|f| f == "old_data_file_cache_file"));
+        } else {
+            panic!("expected a TableEvent::EvictedFilesToDelete notification");
+        }
+    }
 
     #[tokio::test]
     async fn test_take_as_read_state_unpins_on_error() {
@@ -213,7 +271,8 @@ mod tests {
             .in_sequence(&mut seq)
             .returning(move |_, _, _| {
                 let handle_clone = handle_clone.clone();
-                Box::pin(async move { Ok((Some(handle_clone), SmallVec::new())) })
+                let files_to_delete = SmallVec::new();
+                Box::pin(async move { Ok((Some(handle_clone), files_to_delete)) })
             });
         mock_cache
             .expect_get_cache_entry()
@@ -227,28 +286,46 @@ mod tests {
                 })
             });
 
+        // Before invoking read, request deletion on the data cache entry so that
+        // unreference() on error will return its cache filepath to delete.
+        let _ = real_cache.try_delete_cache_entry(FAKE_FILE_ID).await;
+
+        // Prepare a separate cache/handle to simulate puffin cache behavior, and
+        // also mark it requested-to-delete so unreference returns files.
+        let puffin_temp_dir = tempdir().unwrap();
+        let mut puffin_cache: ObjectStorageCache = create_infinite_object_storage_cache(
+            &puffin_temp_dir,
+            /*optimize_local_filesystem=*/ false,
+        );
+        let puffin_handle = { import_fake_cache_entry(&puffin_temp_dir, &mut puffin_cache).await };
+        let _ = puffin_cache.try_delete_cache_entry(FAKE_FILE_ID).await;
+
         // Filesystem accessor mock (unused, but required by signature).
         let filesystem_accessor = MockBaseFileSystemAccess::new();
 
+        // Table notifier channel to capture deletion notifications.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TableEvent>(8);
+
         // Construct ReadOutput with two remote files; second call will error.
         let fake_remote_path = get_fake_file_path(&temp_dir);
+        let associated_temp_dir = tempdir().unwrap();
         let read_output = ReadOutput {
             data_file_paths: vec![
                 DataFileForRead::RemoteFilePath((FAKE_FILE_ID, fake_remote_path.clone())),
                 DataFileForRead::RemoteFilePath((FAKE_FILE_ID, fake_remote_path)),
             ],
-            puffin_cache_handles: Vec::new(),
+            puffin_cache_handles: vec![puffin_handle],
             deletion_vectors: Vec::new(),
             position_deletes: Vec::new(),
-            associated_files: Vec::new(),
-            table_notifier: None,
+            // Add an associated temporary file to trigger error-path notification.
+            associated_files: vec![get_fake_file_path(&associated_temp_dir)],
+            table_notifier: Some(tx),
             object_storage_cache: Some(Arc::new(mock_cache)),
             filesystem_accessor: Some(Arc::new(filesystem_accessor)),
         };
 
         // Invoke and expect error; previously pinned handle must be unpinned.
         let res = read_output
-            .clone()
             .take_as_read_state(Arc::new(|p: String| p))
             .await;
         assert!(res.is_err());
@@ -261,6 +338,30 @@ mod tests {
             0
         );
 
-        // Do not unreference pinned_handle again; it was unpinned by error handling.
+        // Collect all deletion notifications from the channel and validate contents.
+        let mut notified_file_sets: Vec<Vec<String>> = Vec::new();
+        while let Some(event) = rx.recv().await {
+            if let TableEvent::EvictedFilesToDelete { evicted_files } = event {
+                notified_file_sets.push(evicted_files.files);
+            }
+        }
+
+        // Should contain the associated file from error-path cleanup notification.
+        let expected_associated = get_fake_file_path(&associated_temp_dir);
+        assert!(notified_file_sets
+            .iter()
+            .any(|files| files.iter().any(|f| f == &expected_associated)));
+
+        // Should contain unreferenced object-storage data cache file path deleted on error.
+        let expected_data_cache_file = get_fake_file_path(&temp_dir);
+        assert!(notified_file_sets
+            .iter()
+            .any(|files| files.iter().any(|f| f == &expected_data_cache_file)));
+
+        // Should contain unreferenced puffin cache file path deleted on error.
+        let expected_puffin_cache_file = get_fake_file_path(&puffin_temp_dir);
+        assert!(notified_file_sets
+            .iter()
+            .any(|files| files.iter().any(|f| f == &expected_puffin_cache_file)));
     }
 }
