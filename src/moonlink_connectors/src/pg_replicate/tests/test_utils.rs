@@ -143,8 +143,7 @@ impl Drop for TestResources {
 
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
-                TestResources::cleanup(client, slots, publications, tables, types)
-                    .await;
+                TestResources::cleanup(client, slots, publications, tables, types).await;
             });
         });
     }

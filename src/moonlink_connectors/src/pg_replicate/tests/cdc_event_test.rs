@@ -384,3 +384,128 @@ async fn test_composite_types() {
         other => panic!("unexpected addr_array cell: {:?}", other),
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+async fn test_null() {
+    // CdcEvent already imported above in this test module
+
+    let client = setup_connection().await;
+
+    let table_name = format!("test_cdc_string_null");
+    let publication = format!("test_cdc_string_null_pub");
+    let slot_name = format!("test_cdc_string_null_slot");
+
+    let mut resources = TestResources::new(client);
+    resources.add_table(table_name.clone());
+    resources.add_publication(publication.clone());
+    resources.add_slot(slot_name.clone());
+
+    // Simple schema with text columns to verify stringified "null"
+    resources
+        .client()
+        .simple_query(&format!(
+            "CREATE TABLE {table_name} (
+                id INTEGER PRIMARY KEY,
+                t1 TEXT,
+                t2 TEXT
+            );"
+        ))
+        .await
+        .unwrap();
+    resources
+        .client()
+        .simple_query(&format!("ALTER TABLE {table_name} REPLICA IDENTITY FULL;"))
+        .await
+        .unwrap();
+
+    // Publication
+    resources
+        .client()
+        .simple_query(&format!(
+            "CREATE PUBLICATION {publication} FOR TABLE {table_name};"
+        ))
+        .await
+        .unwrap();
+
+    let mut replication_client = create_replication_client().await;
+    replication_client
+        .begin_readonly_transaction()
+        .await
+        .unwrap();
+    let slot_info = replication_client
+        .get_or_create_slot(&slot_name)
+        .await
+        .unwrap();
+    replication_client.commit_txn().await.unwrap();
+
+    let cdc_config = CdcStreamConfig {
+        publication: publication.clone(),
+        slot_name: slot_name.clone(),
+        confirmed_flush_lsn: slot_info.confirmed_flush_lsn,
+    };
+
+    let mut cdc_stream = PostgresSource::create_cdc_stream(replication_client, cdc_config.clone())
+        .await
+        .unwrap();
+
+    let table_schema = fetch_table_schema(&publication, &table_name).await;
+    let mut pinned_stream = Box::pin(cdc_stream);
+    pinned_stream.as_mut().add_table_schema(table_schema);
+
+    // Background executor
+    let sql_tx = spawn_sql_executor(database_url());
+    resources.set_sql_tx(sql_tx.clone());
+
+    // Insert rows with literal 'null' strings
+    sql_tx
+        .send(format!(
+            "INSERT INTO {table_name} VALUES
+                (1, 'null', 'NULL'),
+                (2, 'nuLL', 'not null'),
+                (3, NULL, 'null');"
+        ))
+        .unwrap();
+
+    // Collect events then search for inserts like test_composite_types
+    let mut events = Vec::new();
+    let timeout = Duration::from_secs(EVENT_COLLECTION_SECS);
+    let start_time = std::time::Instant::now();
+    while start_time.elapsed() < timeout {
+        match tokio::time::timeout(
+            Duration::from_millis(STREAM_NEXT_TIMEOUT_MS),
+            pinned_stream.next(),
+        )
+        .await
+        {
+            Ok(Some(Ok(ev))) => events.push(ev),
+            Ok(Some(Err(e))) => panic!("Error in CDC stream: {:?}", e),
+            Ok(None) => break,
+            Err(_) => continue,
+        }
+    }
+
+    // Find inserted rows by id and validate stringified null handling
+    let find_insert = |id: i32| -> Option<&crate::pg_replicate::conversions::table_row::TableRow> {
+        events.iter().find_map(|e| {
+            if let CdcEvent::Insert((_, row, _)) = e {
+                if matches!(row.values.get(0), Some(Cell::I32(v)) if *v == id) {
+                    return Some(row);
+                }
+            }
+            None
+        })
+    };
+
+    let row1 = find_insert(1).expect("missing insert id=1");
+    assert!(matches!(row1.values.get(1), Some(Cell::String(s)) if s == "null"));
+    assert!(matches!(row1.values.get(2), Some(Cell::String(s)) if s == "NULL"));
+
+    let row2 = find_insert(2).expect("missing insert id=2");
+    assert!(matches!(row2.values.get(1), Some(Cell::String(s)) if s == "nuLL"));
+    assert!(matches!(row2.values.get(2), Some(Cell::String(s)) if s == "not null"));
+
+    let row3 = find_insert(3).expect("missing insert id=3");
+    assert!(matches!(row3.values.get(1), Some(Cell::Null)));
+    assert!(matches!(row3.values.get(2), Some(Cell::String(s)) if s == "null"));
+}
