@@ -34,23 +34,21 @@ pub async fn create_replication_client() -> ReplicationClient {
 
 async fn drop_publication(client: &tokio_postgres::Client, publication: &str) {
     let _ = client
-        .simple_query(&format!(
-            "DROP PUBLICATION IF EXISTS {publication} CASCADE;"
-        ))
+        .simple_query(&format!("DROP PUBLICATION {publication} CASCADE;"))
         .await
         .unwrap();
 }
 
 async fn drop_table(client: &tokio_postgres::Client, table_name: &str) {
     let _ = client
-        .simple_query(&format!("DROP TABLE IF EXISTS {table_name} CASCADE;"))
+        .simple_query(&format!("DROP TABLE {table_name} CASCADE;"))
         .await
         .unwrap();
 }
 
 async fn drop_type(client: &tokio_postgres::Client, type_name: &str) {
     let _ = client
-        .simple_query(&format!("DROP TYPE IF EXISTS {type_name} CASCADE;"))
+        .simple_query(&format!("DROP TYPE {type_name} CASCADE;"))
         .await
         .unwrap();
 }
@@ -110,18 +108,24 @@ impl TestResources {
         self.sql_tx = Some(tx);
     }
 
-    pub async fn cleanup(&self) {
-        for slot in &self.slots {
-            drop_replication_slot(&self.client, slot).await;
+    async fn cleanup(
+        client: Arc<tokio_postgres::Client>,
+        slots: Vec<String>,
+        publications: Vec<String>,
+        tables: Vec<String>,
+        types: Vec<String>,
+    ) {
+        for slot in &slots {
+            drop_replication_slot(&client, &slot).await;
         }
-        for publication in &self.publications {
-            drop_publication(&self.client, publication).await;
+        for publication in &publications {
+            drop_publication(&client, &publication).await;
         }
-        for table in &self.tables {
-            drop_table(&self.client, table).await;
+        for table in &tables {
+            drop_table(&client, &table).await;
         }
-        for type_name in &self.types {
-            drop_type(&self.client, type_name).await;
+        for type_name in &types {
+            drop_type(&client, &type_name).await;
         }
     }
 }
@@ -131,25 +135,17 @@ impl Drop for TestResources {
         // Drop the SQL sender to stop background executor if still running
         let _ = self.sql_tx.take();
 
-        // Use Arc to share the client without cloning
         let client = Arc::clone(&self.client);
-        let tables = self.tables.clone();
-        let publications = self.publications.clone();
-        let slots = self.slots.clone();
-        let types = self.types.clone();
-        tokio::spawn(async move {
-            for slot in &slots {
-                drop_replication_slot(&client, slot).await;
-            }
-            for publication in &publications {
-                drop_publication(&client, publication).await;
-            }
-            for table in &tables {
-                drop_table(&client, table).await;
-            }
-            for type_name in &types {
-                drop_type(&client, type_name).await;
-            }
+        let tables = std::mem::take(&mut self.tables);
+        let publications = std::mem::take(&mut self.publications);
+        let slots = std::mem::take(&mut self.slots);
+        let types = std::mem::take(&mut self.types);
+
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async move {
+                TestResources::cleanup(client, slots, publications, tables, types)
+                    .await;
+            });
         });
     }
 }
