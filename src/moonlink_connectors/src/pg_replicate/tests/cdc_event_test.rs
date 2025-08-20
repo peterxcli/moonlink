@@ -235,21 +235,19 @@ async fn test_composite_types() {
 
     assert!(!events.is_empty(), "No CDC events were received");
 
-    use crate::pg_replicate::conversions::cdc_event::CdcEvent;
-
     // the events might include other types of events, eg. BEGIN, PrimaryKeepAlive, etc.
-    // Filter & find insert for id=2
-    let inserted_row = events
-        .iter()
-        .find_map(|e| {
-            if let CdcEvent::Insert((_, row, _)) = e {
-                if matches!(row.values.get(0), Some(Cell::I32(2))) {
-                    return Some(row);
-                }
+    // so using deque to pop the events in the order of execution sequence
+    let mut q: VecDeque<_> = events.into_iter().collect();
+
+    // Expect Insert id=2 first
+    let inserted_row = loop {
+        let ev = q.pop_front().expect("expected insert for id=2");
+        if let CdcEvent::Insert((_, row, _)) = ev {
+            if matches!(row.values.get(0), Some(Cell::I32(2))) {
+                break row;
             }
-            None
-        })
-        .expect("expected insert for id=2");
+        }
+    };
 
     // basic_addr should be a composite (street, city, zip)
     match inserted_row.values.get(1) {
@@ -261,52 +259,45 @@ async fn test_composite_types() {
         other => panic!("unexpected basic_addr cell: {:?}", other),
     }
 
-    // Optionally validate update for id=1 if present
-    if let Some(updated_row) = events.iter().find_map(|e| {
-        if let CdcEvent::Update((_, _old, new_row, _)) = e {
-            if matches!(new_row.values.get(0), Some(Cell::I32(1))) {
-                return Some(new_row);
+    // validate update for id=1 next
+    let update_row = loop {
+        let ev = q.pop_front().expect("expected update for id=1");
+        if let CdcEvent::Update((_, _, row, _)) = ev {
+            if matches!(row.values.get(0), Some(Cell::I32(1))) {
+                break row;
             }
         }
-        None
-    }) {
-        match updated_row.values.get(1) {
-            Some(Cell::Composite(fields)) => {
-                assert!(matches!(fields.get(0), Some(Cell::String(s)) if s == "Updated St"));
-                assert!(matches!(fields.get(1), Some(Cell::String(s)) if s == "Updated City"));
-                assert!(matches!(fields.get(2), Some(Cell::I32(54321))));
-            }
-            other => panic!("unexpected updated basic_addr cell: {:?}", other),
+    };
+    match update_row.values.get(1) {
+        Some(Cell::Composite(fields)) => {
+            assert!(matches!(fields.get(0), Some(Cell::String(s)) if s == "Updated St"));
+            assert!(matches!(fields.get(1), Some(Cell::String(s)) if s == "Updated City"));
+            assert!(matches!(fields.get(2), Some(Cell::I32(54321))));
         }
+        other => panic!("unexpected updated basic_addr cell: {:?}", other),
     }
 
-    // Find delete for id=2
-    let deleted_row = events
-        .iter()
-        .find_map(|e| {
-            if let CdcEvent::Delete((_, row, _)) = e {
-                if matches!(row.values.get(0), Some(Cell::I32(2))) {
-                    return Some(row);
-                }
+    // Expect insert for id=3 next
+    let complex_row = loop {
+        let ev = q.pop_front().expect("expected insert for id=3");
+        if let CdcEvent::Insert((_, row, _)) = ev {
+            if matches!(row.values.get(0), Some(Cell::I32(3))) {
+                break row;
             }
-            None
-        })
-        .expect("expected delete for id=2");
+        }
+    };
+
+    // Next expect delete for id=2
+    let deleted_row = loop {
+        let ev = q.pop_front().expect("expected delete for id=2");
+        if let CdcEvent::Delete((_, row, _)) = ev {
+            if matches!(row.values.get(0), Some(Cell::I32(2))) {
+                break row;
+            }
+        }
+    };
 
     assert!(matches!(deleted_row.values.get(0), Some(Cell::I32(2))));
-
-    // Validate complex nested insert (id=3)
-    let complex_row = events
-        .iter()
-        .find_map(|e| {
-            if let CdcEvent::Insert((_, row, _)) = e {
-                if matches!(row.values.get(0), Some(Cell::I32(3))) {
-                    return Some(row);
-                }
-            }
-            None
-        })
-        .expect("expected insert for id=3");
 
     // basic_addr
     match complex_row.values.get(1) {
