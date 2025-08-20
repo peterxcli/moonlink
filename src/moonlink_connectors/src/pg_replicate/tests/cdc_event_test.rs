@@ -2,11 +2,13 @@
 
 use super::test_utils::{create_replication_client, database_url, setup_connection, TestResources};
 use crate::pg_replicate::clients::postgres::ReplicationClient;
+use crate::pg_replicate::conversions::cdc_event::CdcEvent;
 use crate::pg_replicate::conversions::Cell;
 use crate::pg_replicate::postgres_source::{CdcStreamConfig, PostgresSource};
 use crate::pg_replicate::table::{TableName, TableSchema};
 use futures::StreamExt;
 use serial_test::serial;
+use std::collections::VecDeque;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_postgres::{connect, NoTls};
@@ -31,13 +33,14 @@ async fn fetch_table_schema(publication: &str, table_name_str: &str) -> TableSch
         .get_src_table_id(&table_name)
         .await
         .unwrap()
-        .expect("missing table id");
+        .expect("missing table id for table {table_name}");
     schema_client
         .get_table_schema(src_table_id, table_name, Some(publication))
         .await
         .unwrap()
 }
 
+/// Spawns a background SQL executor that can be used to submit arbitrary SQL in desired order with optional delays between them
 fn spawn_sql_executor(database_url: String) -> mpsc::UnboundedSender<String> {
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
     tokio::spawn(async move {
@@ -57,18 +60,14 @@ fn spawn_sql_executor(database_url: String) -> mpsc::UnboundedSender<String> {
     tx
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
-async fn test_composite_types_in_cdc_stream() {
+async fn test_composite_types() {
     let client = setup_connection().await;
-    // Per-test dynamic names
-    let suffix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let table_name = format!("test_composite_cdc_{suffix}");
-    let publication = format!("test_composite_pub_{suffix}");
-    let slot_name = format!("test_composite_slot_{suffix}");
+
+    let table_name = format!("test_composite_cdc");
+    let publication = format!("test_composite_pub");
+    let slot_name = format!("test_composite_slot");
 
     let mut resources = TestResources::new(client);
     resources.add_table(table_name.clone());
@@ -146,13 +145,10 @@ async fn test_composite_types_in_cdc_stream() {
         .begin_readonly_transaction()
         .await
         .unwrap();
-    let slot_info = tokio::time::timeout(
-        Duration::from_secs(10),
-        replication_client.get_or_create_slot(&slot_name),
-    )
-    .await
-    .expect("timeout waiting for get_or_create_slot")
-    .expect("get_or_create_slot failed");
+    let slot_info = replication_client
+        .get_or_create_slot(&slot_name)
+        .await
+        .unwrap();
 
     // Commit the transaction after creating the slot
     replication_client.commit_txn().await.unwrap();
@@ -165,32 +161,24 @@ async fn test_composite_types_in_cdc_stream() {
     };
 
     // Create CDC stream (converted events) and attach table schema for conversion
-    let mut cdc_stream = tokio::time::timeout(
-        Duration::from_secs(10),
-        PostgresSource::create_cdc_stream(replication_client, cdc_config.clone()),
-    )
-    .await
-    .expect("timeout waiting for create_cdc_stream")
-    .expect("create_cdc_stream failed");
+    let mut cdc_stream = PostgresSource::create_cdc_stream(replication_client, cdc_config.clone())
+        .await
+        .unwrap();
 
     // Fetch and add the table schema so composite parsing works
     let table_schema = fetch_table_schema(&publication, &table_name).await;
-    use std::pin::Pin;
     let mut pinned_stream = Box::pin(cdc_stream);
     pinned_stream.as_mut().add_table_schema(table_schema);
 
     // Start a background SQL executor and submit changes via channel
     let sql_tx = spawn_sql_executor(database_url());
     resources.set_sql_tx(sql_tx.clone());
-    // Developers can submit arbitrary SQL in desired order with optional delays between them
-    tokio::time::sleep(Duration::from_millis(100)).await;
     sql_tx
         .send(format!(
             "INSERT INTO {table_name} VALUES \
              (2, ROW('999 Test St', 'Test City', 12345)::test_address, NULL, NULL, NULL);"
         ))
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
     sql_tx
         .send(format!(
             "UPDATE {table_name} \
@@ -198,7 +186,6 @@ async fn test_composite_types_in_cdc_stream() {
              WHERE id = 1;"
         ))
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
     sql_tx
         .send(format!(
             "INSERT INTO {table_name} VALUES\
@@ -215,7 +202,6 @@ async fn test_composite_types_in_cdc_stream() {
              );"
         ))
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
     sql_tx
         .send(format!("DELETE FROM {table_name} WHERE id = 2;"))
         .unwrap();
