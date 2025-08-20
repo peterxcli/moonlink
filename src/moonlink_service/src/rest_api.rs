@@ -1,3 +1,4 @@
+use crate::util::field_schemas_to_arrow_schema;
 use axum::{
     extract::{Path, State},
     http::{Method, StatusCode},
@@ -11,8 +12,8 @@ use moonlink_backend::{
     EventRequest, FileEventOperation, FileEventRequest, RowEventOperation, RowEventRequest,
     REST_API_URI,
 };
+use moonlink_rpc::FieldSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::oneshot;
@@ -54,14 +55,6 @@ pub struct CreateTableRequest {
     pub table: String,
     pub schema: Vec<FieldSchema>,
     pub table_config: TableConfig,
-}
-
-/// Field schema definition
-#[derive(Debug, Serialize, Deserialize)]
-pub struct FieldSchema {
-    pub name: String,
-    pub data_type: String,
-    pub nullable: bool,
 }
 
 /// Response structure for table creation
@@ -164,38 +157,9 @@ async fn create_table(
         table_name, payload
     );
 
-    // Convert field schemas to Arrow schema with proper field IDs (like PostgreSQL)
-    use arrow_schema::{DataType, Field, Schema};
-
-    let mut field_id = 0;
-    let fields: Result<Vec<Field>, String> = payload
-        .schema
-        .iter()
-        .map(|field| {
-            let data_type = match field.data_type.as_str() {
-                "int32" => DataType::Int32,
-                "int64" => DataType::Int64,
-                "string" | "text" => DataType::Utf8,
-                "boolean" | "bool" => DataType::Boolean,
-                "float32" => DataType::Float32,
-                "float64" => DataType::Float64,
-                _ => return Err(format!("Unsupported data type: {}", field.data_type)),
-            };
-
-            // Create field with metadata (like PostgreSQL does)
-            let mut metadata = HashMap::new();
-            metadata.insert("PARQUET:field_id".to_string(), field_id.to_string());
-            field_id += 1;
-
-            let field_with_metadata =
-                Field::new(&field.name, data_type, field.nullable).with_metadata(metadata);
-
-            Ok(field_with_metadata)
-        })
-        .collect();
-
-    let fields = match fields {
-        Ok(fields) => fields,
+    // Convert field schemas to Arrow schema
+    let arrow_schema = match field_schemas_to_arrow_schema(&payload.schema) {
+        Ok(schema) => schema,
         Err(e) => {
             return Err((
                 StatusCode::BAD_REQUEST,
@@ -206,8 +170,6 @@ async fn create_table(
             ));
         }
     };
-
-    let arrow_schema = Schema::new(fields);
 
     // Serialization not expect to fail.
     let serialized_table_config = serde_json::to_string(&payload.table_config).unwrap();

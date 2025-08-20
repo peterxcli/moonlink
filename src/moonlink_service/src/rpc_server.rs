@@ -1,8 +1,11 @@
+use crate::util::field_schemas_to_arrow_schema;
 use crate::{error::Error, Result};
 use arrow_ipc::writer::StreamWriter;
-use moonlink_backend::{EventOperation, EventRequest, MoonlinkBackend, REST_API_URI};
+use moonlink_backend::{
+    EventRequest, MoonlinkBackend, RowEventOperation, RowEventRequest, REST_API_URI,
+};
 use moonlink_error::{ErrorStatus, ErrorStruct};
-use moonlink_rpc::{read, write, FieldSchema, Request, Table};
+use moonlink_rpc::{read, write, Request, Table};
 use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::io::ErrorKind::{BrokenPipe, ConnectionReset, UnexpectedEof};
@@ -161,46 +164,20 @@ where
                 src_table,
                 schema_fields,
             } => {
-                use arrow_schema::{DataType, Field, Schema};
-                use std::collections::HashMap;
-
-                // Convert FieldSchema to Arrow Schema mirroring REST behavior
-                let mut field_id: i32 = 0;
-                let fields: crate::Result<Vec<Field>> = schema_fields
-                    .into_iter()
-                    .map(|field: FieldSchema| {
-                        let data_type = match field.data_type.as_str() {
-                            "int32" => DataType::Int32,
-                            "int64" => DataType::Int64,
-                            "string" | "text" => DataType::Utf8,
-                            "boolean" | "bool" => DataType::Boolean,
-                            "float32" => DataType::Float32,
-                            "float64" => DataType::Float64,
-                            other => {
-                                return Err(crate::error::Error::InvalidArgument(ErrorStruct::new(
-                                    format!("Unsupported data type: {other}"),
-                                    ErrorStatus::Permanent,
-                                )))
-                            }
-                        };
-
-                        let mut metadata = HashMap::new();
-                        metadata.insert("PARQUET:field_id".to_string(), field_id.to_string());
-                        field_id += 1;
-                        Ok(Field::new(&field.name, data_type, field.nullable)
-                            .with_metadata(metadata))
-                    })
-                    .collect();
-
-                let fields = fields?;
-                let arrow_schema = Schema::new(fields);
+                let arrow_schema =
+                    field_schemas_to_arrow_schema(&schema_fields).map_err(|msg| {
+                        crate::error::Error::InvalidArgument(ErrorStruct::new(
+                            msg,
+                            ErrorStatus::Permanent,
+                        ))
+                    })?;
                 backend
                     .create_table(
                         database,
                         table,
                         src_table,
                         REST_API_URI.to_string(),
-                        /*table_config=*/"{}".to_string(),
+                        /*table_config=*/ "{}".to_string(),
                         Some(arrow_schema),
                     )
                     .await?;
@@ -213,9 +190,9 @@ where
             } => {
                 use std::time::SystemTime;
                 let op = match operation.as_str() {
-                    "insert" => EventOperation::Insert,
-                    "update" => EventOperation::Update,
-                    "delete" => EventOperation::Delete,
+                    "insert" => RowEventOperation::Insert,
+                    "update" => RowEventOperation::Update,
+                    "delete" => RowEventOperation::Delete,
                     _ => {
                         return Err(crate::error::Error::InvalidArgument(ErrorStruct::new(
                             format!(
@@ -226,12 +203,13 @@ where
                     }
                 };
 
-                let request = EventRequest {
+                let row_event_request = RowEventRequest {
                     src_table_name: src_table,
                     operation: op,
                     payload,
                     timestamp: SystemTime::now(),
                 };
+                let request = EventRequest::RowRequest(row_event_request);
                 backend.send_event_request(request).await?;
                 write(&mut stream, &()).await?;
             }

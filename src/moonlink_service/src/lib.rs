@@ -1,6 +1,7 @@
 mod error;
 mod rest_api;
 mod rpc_server;
+mod util;
 
 pub use error::Result;
 
