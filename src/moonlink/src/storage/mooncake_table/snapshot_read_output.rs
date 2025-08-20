@@ -65,81 +65,46 @@ impl ReadOutput {
     ) -> Result<Arc<ReadState>> {
         // Resolve remote data files.
         let mut resolved_data_files = Vec::with_capacity(self.data_file_paths.len());
-        let mut cache_handles: Vec<NonEvictableHandle> = vec![];
-        let mut evicted_files_to_delete_on_error: Vec<String> = vec![];
-        for cur_data_file in self.data_file_paths.into_iter() {
+        let mut cache_handles = vec![];
+        for cur_data_file in self.data_file_paths.clone().into_iter() {
             match cur_data_file {
                 DataFileForRead::TemporaryDataFile(file) => resolved_data_files.push(file),
                 DataFileForRead::RemoteFilePath((file_id, remote_filepath)) => {
-                    // If cache or filesystem accessor not provided, fall back to remote filepath.
-                    if let (Some(object_storage_cache), Some(filesystem_accessor)) = (
-                        self.object_storage_cache.as_ref(),
-                        self.filesystem_accessor.as_ref(),
-                    ) {
-                        let res = object_storage_cache
-                            .get_cache_entry(
-                                file_id,
-                                &remote_filepath,
-                                filesystem_accessor.as_ref(),
-                            )
-                            .await;
-                        match res {
-                            Ok((cache_handle, files_to_delete)) => {
-                                if let Some(cache_handle) = cache_handle {
-                                    resolved_data_files
-                                        .push(cache_handle.get_cache_filepath().to_string());
-                                    cache_handles.push(cache_handle);
-                                } else {
-                                    resolved_data_files.push(remote_filepath);
-                                }
+                    let (object_storage_cache, filesystem_accessor) = (
+                        self.object_storage_cache.as_ref().unwrap(),
+                        self.filesystem_accessor.as_ref().unwrap(),
+                    );
+                    let res = object_storage_cache
+                        .get_cache_entry(file_id, &remote_filepath, filesystem_accessor.as_ref())
+                        .await;
 
-                                if !files_to_delete.is_empty() {
-                                    if let Some(table_notifier) = self.table_notifier.as_mut() {
-                                        let _ = table_notifier
-                                            .send(TableEvent::EvictedFilesToDelete {
-                                                evicted_files: EvictedFiles {
-                                                    files: files_to_delete.to_vec(),
-                                                },
-                                            })
-                                            .await;
-                                    }
-                                }
+                    match res {
+                        Ok((cache_handle, files_to_delete)) => {
+                            if let Some(cache_handle) = cache_handle {
+                                resolved_data_files
+                                    .push(cache_handle.get_cache_filepath().to_string());
+                                cache_handles.push(cache_handle);
+                            } else {
+                                resolved_data_files.push(remote_filepath);
                             }
-                            Err(e) => {
-                                // Unpin all previously pinned cache handles before propagating error.
-                                for mut handle in cache_handles.drain(..) {
-                                    let files_to_delete = handle.unreference().await;
-                                    evicted_files_to_delete_on_error.extend(files_to_delete);
-                                }
 
-                                // Also unpin any puffin cache handles included in this read output.
-                                for mut handle in self.puffin_cache_handles.drain(..) {
-                                    let files_to_delete = handle.unreference().await;
-                                    evicted_files_to_delete_on_error.extend(files_to_delete);
-                                }
-
-                                // Best-effort delete any temporary associated files created for this read.
-                                for file in self.associated_files.drain(..) {
-                                    let _ = tokio::fs::remove_file(&file).await;
-                                }
-
-                                // Best-effort notify deletions.
-                                if !evicted_files_to_delete_on_error.is_empty() {
-                                    if let Some(table_notifier) = self.table_notifier.as_mut() {
-                                        let _ = table_notifier
-                                            .send(TableEvent::EvictedFilesToDelete {
-                                                evicted_files: EvictedFiles {
-                                                    files: evicted_files_to_delete_on_error,
-                                                },
-                                            })
-                                            .await;
-                                    }
-                                }
-                                return Err(e);
+                            if !files_to_delete.is_empty() {
+                                self.table_notifier
+                                    .as_mut()
+                                    .unwrap()
+                                    .send(TableEvent::EvictedFilesToDelete {
+                                        evicted_files: EvictedFiles {
+                                            files: files_to_delete.to_vec(),
+                                        },
+                                    })
+                                    .await
+                                    .unwrap();
                             }
                         }
-                    } else {
-                        resolved_data_files.push(remote_filepath);
+                        Err(e) => {
+                            self.handle_resolution_error(&mut cache_handles).await;
+                            return Err(e);
+                        }
                     }
                 }
             }
@@ -157,6 +122,50 @@ impl ReadOutput {
             cache_handles,
             read_state_filepath_remap,
         )))
+    }
+
+    /// Handle cleanup and notifications when resolving remote filepaths fails.
+    async fn handle_resolution_error(&mut self, cache_handles: &mut Vec<NonEvictableHandle>) {
+        let mut evicted_files_to_delete_on_error = vec![];
+        // Unpin all previously pinned cache handles before propagating error.
+        for mut handle in cache_handles.drain(..) {
+            let files_to_delete = handle.unreference().await;
+            evicted_files_to_delete_on_error.extend(files_to_delete);
+        }
+
+        // Also unpin any puffin cache handles included in this read output.
+        for mut handle in self.puffin_cache_handles.drain(..) {
+            let files_to_delete = handle.unreference().await;
+            evicted_files_to_delete_on_error.extend(files_to_delete);
+        }
+
+        // Best-effort delete any temporary associated files created for this read.
+        if !self.associated_files.is_empty() {
+            self.table_notifier
+                .as_mut()
+                .unwrap()
+                .send(TableEvent::EvictedFilesToDelete {
+                    evicted_files: EvictedFiles {
+                        files: self.associated_files.to_vec(),
+                    },
+                })
+                .await
+                .unwrap();
+        }
+
+        // Best-effort notify deletions.
+        if !evicted_files_to_delete_on_error.is_empty() {
+            self.table_notifier
+                .as_mut()
+                .unwrap()
+                .send(TableEvent::EvictedFilesToDelete {
+                    evicted_files: EvictedFiles {
+                        files: evicted_files_to_delete_on_error.to_vec(),
+                    },
+                })
+                .await
+                .unwrap();
+        }
     }
 }
 
