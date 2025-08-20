@@ -1,10 +1,20 @@
 use crate::rest_ingest::rest_source::SrcTableId;
-use crate::rest_ingest::rest_source::{EventOperation, RestEvent};
+use crate::rest_ingest::rest_source::{RestEvent, RowEventOperation};
 use crate::{Error, Result};
 use moonlink::TableEvent;
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, warn};
+
+/// Result for rest event processing.
+pub struct RestEventProcResult {
+    /// Source table id.
+    pub src_table_id: SrcTableId,
+    /// Commit LSN, only assigned if committed.
+    pub commit_lsn: Option<u64>,
+}
 
 /// REST-specific sink for handling REST API table events
 pub struct RestSink {
@@ -62,8 +72,15 @@ impl RestSink {
 
     /// Process a REST event and send appropriate table events
     /// This is the main entry point for REST event processing, similar to moonlink_sink's process_cdc_event
-    pub async fn process_rest_event(&mut self, rest_event: RestEvent) -> Result<()> {
+    pub async fn process_rest_event(
+        &mut self,
+        rest_event: RestEvent,
+    ) -> Result<RestEventProcResult> {
         match rest_event {
+            // ==================
+            // Row events
+            // ==================
+            //
             RestEvent::RowEvent {
                 src_table_id,
                 operation,
@@ -73,7 +90,11 @@ impl RestSink {
             } => {
                 self.tables_in_progress = Some(src_table_id);
                 self.process_row_event(src_table_id, operation, row, lsn)
-                    .await
+                    .await?;
+                Ok(RestEventProcResult {
+                    src_table_id,
+                    commit_lsn: None,
+                })
             }
             RestEvent::Commit { lsn, timestamp } => {
                 let src_table_id = self
@@ -81,21 +102,80 @@ impl RestSink {
                     .take()
                     .expect("tables_in_progress not set");
                 self.process_commit_event(lsn, src_table_id, timestamp)
-                    .await
+                    .await?;
+                Ok(RestEventProcResult {
+                    src_table_id,
+                    commit_lsn: Some(lsn),
+                })
+            }
+            // ==================
+            // Table events
+            // ==================
+            //
+            RestEvent::FileInsertEvent {
+                src_table_id,
+                table_events,
+            } => {
+                self.process_file_insertion_boxed(table_events).await?;
+                Ok(RestEventProcResult {
+                    src_table_id,
+                    commit_lsn: None,
+                })
+            }
+            RestEvent::FileUploadEvent {
+                src_table_id,
+                files,
+                lsn,
+            } => {
+                self.process_file_upload(src_table_id, files, lsn).await?;
+                Ok(RestEventProcResult {
+                    src_table_id,
+                    commit_lsn: Some(lsn),
+                })
             }
         }
     }
 
-    /// Process a row event (Insert, Update, Delete)
+    /// Process a file event (upload files).
+    fn process_file_insertion_boxed<'a>(
+        &'a mut self,
+        table_events: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<Result<RestEvent>>>>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move { self.process_file_insertion_impl(table_events).await })
+    }
+    async fn process_file_insertion_impl(
+        &mut self,
+        table_events: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<Result<RestEvent>>>>,
+    ) -> Result<()> {
+        let mut guard = table_events.lock().await;
+        while let Some(event) = guard.recv().await {
+            self.process_rest_event(event?).await?;
+        }
+        Ok(())
+    }
+
+    /// Process file upload event.
+    async fn process_file_upload(
+        &self,
+        src_table_id: SrcTableId,
+        files: Vec<String>,
+        lsn: u64,
+    ) -> Result<()> {
+        let table_event = TableEvent::LoadFiles { files, lsn };
+        self.send_table_event(src_table_id, table_event).await?;
+        Ok(())
+    }
+
+    /// Process a row event (Insert, Update, Delete).
     async fn process_row_event(
         &self,
         src_table_id: SrcTableId,
-        operation: EventOperation,
+        operation: RowEventOperation,
         row: moonlink::row::MoonlinkRow,
         lsn: u64,
     ) -> Result<()> {
         match operation {
-            EventOperation::Insert => {
+            RowEventOperation::Insert => {
                 let table_event = TableEvent::Append {
                     row,
                     lsn,
@@ -107,7 +187,7 @@ impl RestSink {
                 self.send_table_event(src_table_id, table_event).await?;
                 debug!(src_table_id, lsn, "processed REST insert event");
             }
-            EventOperation::Update => {
+            RowEventOperation::Update => {
                 // For updates, we send both delete and append events
                 // First send delete for the old row (using the same row for simplicity)
                 let delete_event = TableEvent::Delete {
@@ -132,7 +212,7 @@ impl RestSink {
                 self.send_table_event(src_table_id, append_event).await?;
                 debug!(src_table_id, lsn, "processed REST update append event");
             }
-            EventOperation::Delete => {
+            RowEventOperation::Delete => {
                 let table_event = TableEvent::Delete {
                     row,
                     lsn,
@@ -195,7 +275,7 @@ impl RestSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rest_ingest::rest_source::{EventOperation, RestEvent};
+    use crate::rest_ingest::rest_source::{RestEvent, RowEventOperation};
     use moonlink::row::{MoonlinkRow, RowValue};
     use std::time::SystemTime;
     use tokio::sync::{mpsc, watch};
@@ -320,7 +400,7 @@ mod tests {
         // Test Insert event
         let insert_event = RestEvent::RowEvent {
             src_table_id,
-            operation: EventOperation::Insert,
+            operation: RowEventOperation::Insert,
             row: test_row.clone(),
             lsn: 10,
             timestamp: SystemTime::now(),
@@ -338,7 +418,7 @@ mod tests {
         // Test Update event (should produce both Delete and Append)
         let update_event = RestEvent::RowEvent {
             src_table_id,
-            operation: EventOperation::Update,
+            operation: RowEventOperation::Update,
             row: test_row.clone(),
             lsn: 20,
             timestamp: SystemTime::now(),
