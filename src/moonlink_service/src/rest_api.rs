@@ -1,4 +1,4 @@
-use crate::util::field_schemas_to_arrow_schema;
+use crate::util::{create_row_event_request, field_schemas_to_arrow_schema};
 use axum::{
     extract::{Path, State},
     http::{Method, StatusCode},
@@ -8,10 +8,7 @@ use axum::{
 };
 use moonlink::StorageConfig;
 use moonlink_backend::table_config::TableConfig;
-use moonlink_backend::{
-    EventRequest, FileEventOperation, FileEventRequest, RowEventOperation, RowEventRequest,
-    REST_API_URI,
-};
+use moonlink_backend::{EventRequest, FileEventOperation, FileEventRequest, REST_API_URI};
 use moonlink_rpc::FieldSchema;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -325,32 +322,17 @@ async fn ingest_data(
         src_table_name, payload
     );
 
-    // Parse operation
-    let operation = match payload.operation.as_str() {
-        "insert" => RowEventOperation::Insert,
-        "update" => RowEventOperation::Update,
-        "delete" => RowEventOperation::Delete,
-        _ => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "invalid_operation".to_string(),
-                    message: format!(
-                        "Invalid operation '{}'. Must be 'insert', 'update', or 'delete'",
-                        payload.operation
-                    ),
-                }),
-            ));
-        }
-    };
-
-    // Create REST request
-    let row_event_request = RowEventRequest {
-        src_table_name: src_table_name.clone(),
-        operation,
-        payload: payload.data,
-        timestamp: SystemTime::now(),
-    };
+    let row_event_request =
+        create_row_event_request(src_table_name.clone(), &payload.operation, payload.data)
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "invalid_operation".to_string(),
+                        message: e,
+                    }),
+                )
+            })?;
     let rest_event_request = EventRequest::RowRequest(row_event_request);
 
     state

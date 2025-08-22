@@ -1,9 +1,7 @@
-use crate::util::field_schemas_to_arrow_schema;
+use crate::util::{create_row_event_request, field_schemas_to_arrow_schema};
 use crate::{error::Error, Result};
 use arrow_ipc::writer::StreamWriter;
-use moonlink_backend::{
-    EventRequest, MoonlinkBackend, RowEventOperation, RowEventRequest, REST_API_URI,
-};
+use moonlink_backend::{EventRequest, MoonlinkBackend, REST_API_URI};
 use moonlink_error::{ErrorStatus, ErrorStruct};
 use moonlink_rpc::{read, write, Request, Table};
 use std::collections::HashMap;
@@ -186,10 +184,7 @@ where
             } => {
                 let arrow_schema =
                     field_schemas_to_arrow_schema(&schema_fields).map_err(|msg| {
-                        crate::error::Error::InvalidArgument(ErrorStruct::new(
-                            msg,
-                            ErrorStatus::Permanent,
-                        ))
+                        Error::InvalidArgument(ErrorStruct::new(msg, ErrorStatus::Permanent))
                     })?;
                 backend
                     .create_table(
@@ -208,27 +203,10 @@ where
                 operation,
                 payload,
             } => {
-                use std::time::SystemTime;
-                let op = match operation.as_str() {
-                    "insert" => RowEventOperation::Insert,
-                    "update" => RowEventOperation::Update,
-                    "delete" => RowEventOperation::Delete,
-                    _ => {
-                        return Err(crate::error::Error::InvalidArgument(ErrorStruct::new(
-                            format!(
-                                "Invalid operation '{operation}'. Must be 'insert', 'update', or 'delete'"
-                            ),
-                            ErrorStatus::Permanent,
-                        )))
-                    }
-                };
-
-                let row_event_request = RowEventRequest {
-                    src_table_name: src_table,
-                    operation: op,
-                    payload,
-                    timestamp: SystemTime::now(),
-                };
+                let row_event_request = create_row_event_request(src_table, &operation, payload)
+                    .map_err(|e| {
+                        Error::InvalidArgument(ErrorStruct::new(e, ErrorStatus::Permanent))
+                    })?;
                 let request = EventRequest::RowRequest(row_event_request);
                 backend.send_event_request(request).await?;
                 write(&mut stream, &()).await?;

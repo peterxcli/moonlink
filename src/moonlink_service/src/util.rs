@@ -1,5 +1,8 @@
 use arrow_schema::{DataType, Field, Schema};
+use moonlink_backend::{RowEventOperation, RowEventRequest};
+use serde_json::Value;
 use std::collections::HashMap;
+use std::time::SystemTime;
 
 // Convert field schemas to Arrow schema with proper field IDs (like PostgreSQL)
 pub fn field_schemas_to_arrow_schema(
@@ -50,4 +53,32 @@ pub fn field_schemas_to_arrow_schema(
     }
 
     Ok(Schema::new(fields))
+}
+
+/// Parse operation string to RowEventOperation
+pub fn parse_row_operation(operation: &str) -> Result<RowEventOperation, String> {
+    match operation {
+        "insert" => Ok(RowEventOperation::Insert),
+        "update" => Ok(RowEventOperation::Update),
+        "delete" => Ok(RowEventOperation::Delete),
+        _ => Err(format!(
+            "Invalid operation '{operation}'. Must be 'insert', 'update', or 'delete'"
+        )),
+    }
+}
+
+/// Create RowEventRequest
+pub fn create_row_event_request(
+    src_table_name: String,
+    operation: &str,
+    payload: Value,
+) -> Result<RowEventRequest, String> {
+    let operation = parse_row_operation(operation)?;
+
+    Ok(RowEventRequest {
+        src_table_name,
+        operation,
+        payload,
+        timestamp: SystemTime::now(),
+    })
 }
