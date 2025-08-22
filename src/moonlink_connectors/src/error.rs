@@ -5,13 +5,14 @@ use crate::rest_ingest::rest_source::RestSourceError;
 use crate::rest_ingest::{json_converter, SrcTableId};
 use moonlink::Error as MoonlinkError;
 use moonlink_error::{io_error_utils, ErrorStatus, ErrorStruct};
+use serde::{Deserialize, Serialize};
 use std::panic::Location;
 use std::result;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio_postgres::Error as TokioPostgresError;
 
-#[derive(Clone, Debug, Error)]
+#[derive(Clone, Debug, Error, Deserialize, Serialize)]
 pub enum Error {
     #[error("{0}")]
     PostgresSourceError(ErrorStruct),
@@ -41,6 +42,10 @@ pub enum Error {
     // Invalid source type for operation.
     #[error("Invalid source type: {0}")]
     InvalidSourceType(String),
+
+    // Table replication error: duplicate table.
+    #[error("Duplicate table added to replication: {0}")]
+    ReplDuplicateTable(String),
 
     // REST API error.
     #[error("REST API error: {0}")]
@@ -72,19 +77,9 @@ pub type Result<T> = result::Result<T, Error>;
 impl From<MoonlinkError> for Error {
     #[track_caller]
     fn from(source: MoonlinkError) -> Self {
-        let status = match &source {
-            MoonlinkError::Arrow(es)
-            | MoonlinkError::Io(es)
-            | MoonlinkError::Parquet(es)
-            | MoonlinkError::WatchChannelRecvError(es)
-            | MoonlinkError::IcebergError(es)
-            | MoonlinkError::OpenDal(es)
-            | MoonlinkError::JoinError(es)
-            | MoonlinkError::Json(es) => es.status,
-        };
         Error::MoonlinkError(ErrorStruct {
             message: "Moonlink source error".to_string(),
-            status,
+            status: source.get_status(),
             source: Some(Arc::new(source.into())),
             location: Some(Location::caller().to_string()),
         })

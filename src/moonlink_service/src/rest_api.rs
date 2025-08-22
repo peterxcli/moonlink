@@ -3,7 +3,7 @@ use axum::{
     extract::{Path, State},
     http::{Method, StatusCode},
     response::Json,
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use moonlink::StorageConfig;
@@ -62,8 +62,26 @@ pub struct CreateTableRequest {
 pub struct CreateTableResponse {
     pub status: String,
     pub message: String,
-    pub table_name: String,
-    pub schema: String,
+    pub database: String,
+    pub table: String,
+}
+
+/// ====================
+/// Drop table
+/// ====================
+///
+/// Request structure for table drop.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DropTableRequest {
+    pub database: String,
+    pub table: String,
+}
+
+/// Response structure for table drop.
+#[derive(Debug, Serialize)]
+pub struct DropTableResponse {
+    pub status: String,
+    pub message: String,
 }
 
 /// ====================
@@ -123,13 +141,14 @@ pub fn create_router(state: ApiState) -> Router {
     Router::new()
         .route("/health", get(health_check))
         .route("/tables/{table}", post(create_table))
+        .route("/tables/{table}", delete(drop_table))
         .route("/ingest/{table}", post(ingest_data))
         .route("/upload/{table}", post(upload_files))
         .with_state(state)
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
-                .allow_methods([Method::GET, Method::POST])
+                .allow_methods([Method::GET, Method::POST, Method::DELETE])
                 .allow_headers(Any),
         )
 }
@@ -148,31 +167,39 @@ async fn health_check() -> Json<HealthResponse> {
 
 /// Table creation endpoint
 async fn create_table(
-    Path(table_name): Path<String>,
+    Path(table): Path<String>,
     State(state): State<ApiState>,
     Json(payload): Json<CreateTableRequest>,
 ) -> Result<Json<CreateTableResponse>, (StatusCode, Json<ErrorResponse>)> {
     debug!(
         "Received table creation request for '{}': {:?}",
-        table_name, payload
+        table, payload
     );
 
     // Convert field schemas to Arrow schema
-    let arrow_schema = match field_schemas_to_arrow_schema(&payload.schema) {
-        Ok(schema) => schema,
+    let arrow_schema = field_schemas_to_arrow_schema(&payload.schema).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_schema".to_string(),
+                message: e,
+            }),
+        )
+    })?;
+
+    // Serialization not expect to fail.
+    let serialized_table_config = match serde_json::to_string(&payload.table_config) {
+        Ok(cfg) => cfg,
         Err(e) => {
             return Err((
-                StatusCode::BAD_REQUEST,
+                StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: "invalid_schema".to_string(),
-                    message: e,
+                    error: "serialization_failed".to_string(),
+                    message: format!("Serialize table config failed: {e}"),
                 }),
             ));
         }
     };
-
-    // Serialization not expect to fail.
-    let serialized_table_config = serde_json::to_string(&payload.table_config).unwrap();
 
     // Create table in backend
     match state
@@ -180,7 +207,7 @@ async fn create_table(
         .create_table(
             payload.database.clone(),
             payload.table.clone(),
-            table_name.clone(),
+            table.clone(),
             REST_API_URI.to_string(),
             serialized_table_config,
             Some(arrow_schema),
@@ -190,17 +217,17 @@ async fn create_table(
         Ok(()) => {
             info!(
                 "Successfully created table '{}' with ID {}:{}",
-                table_name, payload.database, payload.table,
+                table, payload.database, payload.table,
             );
             Ok(Json(CreateTableResponse {
                 status: "success".to_string(),
                 message: "Table created successfully".to_string(),
-                table_name,
-                schema: payload.database.clone(),
+                database: payload.database.clone(),
+                table,
             }))
         }
         Err(e) => {
-            error!("Failed to create table '{}': {}", table_name, e);
+            error!("Failed to create table '{}': {}", table, e);
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
@@ -210,6 +237,25 @@ async fn create_table(
             ))
         }
     }
+}
+
+/// Table drop endpoint
+async fn drop_table(
+    Path(table): Path<String>,
+    State(state): State<ApiState>,
+    Json(payload): Json<DropTableRequest>,
+) -> Result<Json<DropTableResponse>, (StatusCode, Json<ErrorResponse>)> {
+    debug!("Received table drop request for '{}': {:?}", table, payload);
+
+    // Create table in backend
+    state
+        .backend
+        .drop_table(payload.database.clone(), payload.table.clone())
+        .await;
+    Ok(Json(DropTableResponse {
+        status: "success".to_string(),
+        message: "Table dropped successfully".to_string(),
+    }))
 }
 
 /// File upload endpoint.

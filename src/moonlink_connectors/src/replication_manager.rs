@@ -3,6 +3,7 @@ use crate::ReplicationConnection;
 use crate::{Error, Result};
 use moonlink::{MoonlinkTableConfig, ObjectStorageCache, ReadStateManager, TableEventManager};
 use moonlink::{ReadStateFilepathRemap, TableStatusReader};
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::hash::Hash;
 use tokio::task::JoinHandle;
@@ -18,7 +19,7 @@ pub const REST_API_URI: &str = "rest://api";
 /// table is added for a URI that is not currently being replicated.
 pub struct ReplicationManager<T: Clone + Eq + Hash + std::fmt::Display> {
     /// Maps from uri to replication connection.
-    connections: HashMap<String, ReplicationConnection>,
+    connections: HashMap<String, ReplicationConnection<T>>,
     /// Maps from mooncake table id to (uri, source table id).
     table_info: HashMap<T, (String, SrcTableId)>,
     /// Base directory for mooncake tables.
@@ -59,22 +60,23 @@ impl<T: Clone + Eq + Hash + std::fmt::Display> ReplicationManager<T> {
         is_recovery: bool,
     ) -> Result<()> {
         debug!(%src_uri, table_name, "adding table through manager");
-        if !self.connections.contains_key(src_uri) {
-            debug!(%src_uri, "creating replication connection");
-            // Lazily create the directory that will hold all tables.
-            // This will not overwrite any existing directory.
-            tokio::fs::create_dir_all(&self.table_base_path).await?;
-            let base_path = tokio::fs::canonicalize(&self.table_base_path).await?;
-            let replication_connection = ReplicationConnection::new(
-                src_uri.to_string(),
-                base_path.to_str().unwrap().to_string(),
-                self.object_storage_cache.clone(),
-            )
-            .await?;
-            self.connections
-                .insert(src_uri.to_string(), replication_connection);
-        }
-        let replication_connection = self.connections.get_mut(src_uri).unwrap();
+        let (replication_connection, is_new_repl_conn): (&mut ReplicationConnection<T>, bool) =
+            match self.connections.entry(src_uri.to_string()) {
+                Entry::Occupied(entry) => (entry.into_mut(), false),
+                Entry::Vacant(entry) => {
+                    debug!(%src_uri, "creating replication connection");
+
+                    tokio::fs::create_dir_all(&self.table_base_path).await?;
+                    let base_path = tokio::fs::canonicalize(&self.table_base_path).await?;
+                    let replication_connection = ReplicationConnection::new(
+                        src_uri.to_string(),
+                        base_path.to_str().unwrap().to_string(),
+                        self.object_storage_cache.clone(),
+                    )
+                    .await?;
+                    (entry.insert(replication_connection), true)
+                }
+            };
 
         let src_table_id = replication_connection
             .add_table_replication(
@@ -85,8 +87,24 @@ impl<T: Clone + Eq + Hash + std::fmt::Display> ReplicationManager<T> {
                 is_recovery,
             )
             .await?;
-        self.table_info
-            .insert(mooncake_table_id, (src_uri.to_string(), src_table_id));
+
+        // Error handling: don't allow duplicate mooncake table id be registered.
+        if self.table_info.contains_key(&mooncake_table_id) {
+            replication_connection
+                .drop_table(&mooncake_table_id, src_table_id)
+                .await?;
+            if is_new_repl_conn {
+                assert!(self.connections.remove(src_uri).is_some());
+            }
+            return Err(Error::ReplDuplicateTable(mooncake_table_id.to_string()));
+        }
+        assert!(self
+            .table_info
+            .insert(
+                mooncake_table_id.clone(),
+                (src_uri.to_string(), src_table_id)
+            )
+            .is_none());
 
         debug!(src_table_id, "table added through manager");
 
@@ -143,11 +161,18 @@ impl<T: Clone + Eq + Hash + std::fmt::Display> ReplicationManager<T> {
 
     /// Initialize event API connection for data ingestion.
     /// Returns the event request sender channel for the API to use.
-    pub async fn initialize_event_api(
+    pub async fn initialize_event_api_for_once(
         &mut self,
         base_path: &str,
     ) -> Result<tokio::sync::mpsc::Sender<crate::rest_ingest::rest_source::EventRequest>> {
-        assert!(!self.connections.contains_key(REST_API_URI));
+        if self.connections.contains_key(REST_API_URI) {
+            return Ok(self
+                .connections
+                .get(REST_API_URI)
+                .as_ref()
+                .unwrap()
+                .get_rest_request_sender());
+        }
 
         // Create the directory that will hold all tables
         tokio::fs::create_dir_all(base_path).await?;
@@ -196,7 +221,9 @@ impl<T: Clone + Eq + Hash + std::fmt::Display> ReplicationManager<T> {
         };
         debug!(src_table_id, %table_uri, "dropping table through manager");
         let repl_conn = self.connections.get_mut(&table_uri).unwrap();
-        repl_conn.drop_table(src_table_id).await?;
+        repl_conn
+            .drop_table(mooncake_table_id, src_table_id)
+            .await?;
         if repl_conn.table_count() == 0 && table_uri != REST_API_URI {
             self.shutdown_connection(&table_uri, true);
         }
@@ -207,26 +234,28 @@ impl<T: Clone + Eq + Hash + std::fmt::Display> ReplicationManager<T> {
 
     pub fn get_table_reader(&self, mooncake_table_id: &T) -> Result<&ReadStateManager> {
         let (src_table_id, connection) = self.get_replication_connection(mooncake_table_id)?;
-        Ok(connection.get_table_reader(src_table_id))
+        Ok(connection.get_table_reader(mooncake_table_id, src_table_id))
     }
 
     pub fn get_table_state_reader(&self, mooncake_table_id: &T) -> Result<&TableStatusReader> {
         let (src_table_id, connection) = self.get_replication_connection(mooncake_table_id)?;
-        Ok(connection.get_table_status_reader(src_table_id))
+        Ok(connection.get_table_status_reader(mooncake_table_id, src_table_id))
     }
 
     /// Return mapping from mooncake table id to its table status readers.
-    pub fn get_table_status_readers(&self) -> HashMap<T, Vec<&TableStatusReader>> {
+    pub fn get_table_status_readers(&self) -> HashMap<T, &TableStatusReader> {
         let mut table_state_readers = HashMap::with_capacity(self.connections.len());
-        for (mooncake_table_id, (uri, _)) in self.table_info.iter() {
-            let cur_repl_conn = self
-                .connections
-                .get(uri)
-                .unwrap_or_else(|| panic!("replication connection with uri {uri} should exist."));
-            table_state_readers.insert(
-                mooncake_table_id.clone(),
-                cur_repl_conn.get_table_status_readers(),
-            );
+        for (_, (src_uri, _)) in self.table_info.iter() {
+            let cur_repl_conn = self.connections.get(src_uri).unwrap_or_else(|| {
+                panic!("replication connection with uri {src_uri} should exist.")
+            });
+
+            let table_status_readers = cur_repl_conn.get_table_status_readers();
+            for (cur_mooncake_table_id, cur_table_status_reader) in table_status_readers.into_iter()
+            {
+                // Multiple mooncake tables could reference to one single replication connection, so duplicate key expected.
+                table_state_readers.insert(cur_mooncake_table_id, cur_table_status_reader);
+            }
         }
         table_state_readers
     }
@@ -244,7 +273,7 @@ impl<T: Clone + Eq + Hash + std::fmt::Display> ReplicationManager<T> {
             .get_mut(uri)
             // Directly panic: table connection uri existence here is an invariant.
             .unwrap_or_else(|| panic!("connection {uri} not found"));
-        Ok(connection.get_table_event_manager(*src_table_id))
+        Ok(connection.get_table_event_manager(mooncake_table_id, *src_table_id))
     }
 
     /// Gracefully shutdown a replication connection by its URI.
@@ -265,7 +294,7 @@ impl<T: Clone + Eq + Hash + std::fmt::Display> ReplicationManager<T> {
     fn get_replication_connection(
         &self,
         mooncake_table_id: &T,
-    ) -> Result<(SrcTableId, &ReplicationConnection)> {
+    ) -> Result<(SrcTableId, &ReplicationConnection<T>)> {
         let (uri, src_table_id) = self
             .table_info
             .get(mooncake_table_id)

@@ -86,6 +86,7 @@ impl MoonlinkBackend {
 
         let backend_attributes = BackendAttributes {
             temp_files_dir: temp_files_dir.to_str().unwrap().to_string(),
+            base_path: base_path.to_str().unwrap().to_string(),
         };
         recovery_utils::recover_all_tables(
             backend_attributes,
@@ -227,18 +228,17 @@ impl MoonlinkBackend {
         let mut table_statuses = vec![];
         let manager = self.replication_manager.read().await;
         let table_state_readers = manager.get_table_status_readers();
-        for (mooncake_table_id, cur_table_state_readers) in table_state_readers.into_iter() {
-            for cur_reader in cur_table_state_readers.iter() {
-                let table_snapshot_status = cur_reader.get_current_table_state().await?;
-                let table_status = TableStatus {
-                    database: mooncake_table_id.database.clone(),
-                    table: mooncake_table_id.table.clone(),
-                    commit_lsn: table_snapshot_status.commit_lsn,
-                    flush_lsn: table_snapshot_status.flush_lsn,
-                    iceberg_warehouse_location: table_snapshot_status.iceberg_warehouse_location,
-                };
-                table_statuses.push(table_status);
-            }
+        for (mooncake_table_id, cur_reader) in table_state_readers.into_iter() {
+            let table_snapshot_status = cur_reader.get_current_table_state().await?;
+            let table_status = TableStatus {
+                database: mooncake_table_id.database.clone(),
+                table: mooncake_table_id.table.clone(),
+                commit_lsn: table_snapshot_status.commit_lsn,
+                flush_lsn: table_snapshot_status.flush_lsn,
+                cardinality: table_snapshot_status.cardinality,
+                iceberg_warehouse_location: table_snapshot_status.iceberg_warehouse_location,
+            };
+            table_statuses.push(table_status);
         }
         Ok(table_statuses)
     }
@@ -271,9 +271,9 @@ impl MoonlinkBackend {
                 "index" => writer.initiate_index_merge().await,
                 "full" => writer.initiate_full_compaction().await,
                 _ => {
-                    return Err(Error::InvalidArgumentError(format!(
-                        "Unrecognizable table optimization mode `{mode}`, expected one of `data`, `index`, or `full`"
-                    )))
+                    return Err(Error::invalid_argument(format!(
+                    "Unrecognizable table optimization mode `{mode}`, expected one of `data`, `index`, or `full`"
+                    )));
                 }
             }
         };
@@ -333,7 +333,9 @@ impl MoonlinkBackend {
     pub async fn initialize_event_api(&mut self) -> Result<()> {
         let event_api_sender = {
             let mut manager = self.replication_manager.write().await;
-            manager.initialize_event_api(&self.base_path).await?
+            manager
+                .initialize_event_api_for_once(&self.base_path)
+                .await?
         };
 
         self.event_api_sender = Some(event_api_sender);
@@ -345,7 +347,7 @@ impl MoonlinkBackend {
             .as_ref()
             .expect("event api sender not initialized")
             .send(request)
-            .await
-            .map_err(|e| Error::MoonlinkConnectorError { source: e.into() })
+            .await?;
+        Ok(())
     }
 }
