@@ -5,7 +5,6 @@ use crate::storage::iceberg::iceberg_table_config::IcebergCatalogConfig;
 use crate::storage::iceberg::moonlink_catalog::MoonlinkCatalog;
 #[cfg(feature = "catalog-rest")]
 use crate::storage::iceberg::rest_catalog::RestCatalog;
-#[cfg(feature = "catalog-rest")]
 use crate::AccessorConfig;
 use iceberg::spec::Schema as IcebergSchema;
 use iceberg::{spec::TableMetadataBuilder, Result as IcebergResult, TableUpdate};
