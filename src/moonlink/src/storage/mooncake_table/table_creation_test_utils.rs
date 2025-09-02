@@ -10,7 +10,9 @@ use crate::storage::filesystem::accessor_config::AccessorConfig;
 use crate::storage::filesystem::gcs::gcs_test_utils;
 #[cfg(feature = "storage-s3")]
 use crate::storage::filesystem::s3::s3_test_utils;
-use crate::storage::iceberg::iceberg_table_config::{IcebergTableConfig, RestCatalogConfig};
+use crate::storage::iceberg::iceberg_table_config::IcebergTableConfig;
+#[cfg(feature = "catalog-rest")]
+use crate::storage::iceberg::iceberg_table_config::RestCatalogConfig;
 use crate::storage::iceberg::iceberg_table_manager::IcebergTableManager;
 #[cfg(feature = "chaos-test")]
 use crate::storage::index::index_merge_config::FileIndexMergeConfig;
