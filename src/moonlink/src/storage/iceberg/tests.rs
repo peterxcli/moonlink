@@ -235,6 +235,7 @@ async fn test_snapshot_load_for_multiple_times() {
         create_test_filesystem_accessor(&config),
         config.clone(),
     )
+    .await
     .unwrap();
 
     iceberg_table_manager
@@ -338,6 +339,7 @@ async fn test_store_and_load_snapshot_impl(iceberg_table_config: IcebergTableCon
         create_test_filesystem_accessor(&iceberg_table_config),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     assert!(iceberg_table_manager.persisted_data_files.is_empty());
 
@@ -535,6 +537,7 @@ async fn test_store_and_load_snapshot_impl(iceberg_table_config: IcebergTableCon
         create_test_filesystem_accessor(&iceberg_table_config),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (_, snapshot) = iceberg_table_manager_for_load
         .load_snapshot_from_table()
@@ -618,6 +621,7 @@ async fn test_store_and_load_snapshot_impl(iceberg_table_config: IcebergTableCon
         create_test_filesystem_accessor(&iceberg_table_config),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (_, snapshot) = iceberg_table_manager_for_load
         .load_snapshot_from_table()
@@ -691,6 +695,7 @@ async fn test_store_and_load_snapshot_impl(iceberg_table_config: IcebergTableCon
         create_test_filesystem_accessor(&iceberg_table_config),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (_, snapshot) = iceberg_table_manager_for_load
         .load_snapshot_from_table()
@@ -767,6 +772,7 @@ async fn test_drop_table_impl(iceberg_table_config: IcebergTableConfig) {
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     iceberg_table_manager
         .initialize_iceberg_table_for_once()
@@ -851,6 +857,7 @@ async fn test_empty_snapshot_load_impl(iceberg_table_config: IcebergTableConfig)
         create_test_filesystem_accessor(&iceberg_table_config),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_table_id, snapshot) = iceberg_table_manager
         .load_snapshot_from_table()
@@ -941,6 +948,7 @@ async fn test_recover_from_failed_snapshot_impl(iceberg_table_config: IcebergTab
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let iceberg_snapshot_payload = IcebergSnapshotPayload {
         uuid: uuid::Uuid::new_v4(),
@@ -988,6 +996,7 @@ async fn test_recover_from_failed_snapshot_impl(iceberg_table_config: IcebergTab
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, snapshot) = iceberg_table_manager_for_recovery
         .load_snapshot_from_table()
@@ -1075,6 +1084,7 @@ async fn test_index_merge_and_create_snapshot_impl(iceberg_table_config: Iceberg
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, snapshot) = iceberg_table_manager_for_recovery
         .load_snapshot_from_table()
@@ -1112,6 +1122,7 @@ async fn test_index_merge_and_create_snapshot_impl(iceberg_table_config: Iceberg
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, snapshot) = iceberg_table_manager_for_recovery
         .load_snapshot_from_table()
@@ -1239,6 +1250,7 @@ async fn test_data_compaction_and_create_snapshot_impl(iceberg_table_config: Ice
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, snapshot) = iceberg_table_manager_for_recovery
         .load_snapshot_from_table()
@@ -1282,6 +1294,7 @@ async fn test_data_compaction_and_create_snapshot_impl(iceberg_table_config: Ice
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, snapshot) = iceberg_table_manager_for_recovery
         .load_snapshot_from_table()
@@ -1409,6 +1422,7 @@ async fn test_data_compaction_with_update_impl(iceberg_table_config: IcebergTabl
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, snapshot) = iceberg_table_manager_for_recovery
         .load_snapshot_from_table()
@@ -1503,6 +1517,7 @@ async fn test_data_compaction_append_only_and_create_snapshot_impl(
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, snapshot) = iceberg_table_manager_for_recovery
         .load_snapshot_from_table()
@@ -1640,6 +1655,7 @@ async fn test_data_compaction_by_deletion_and_create_snapshot_impl(
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, snapshot) = iceberg_table_manager_for_recovery
         .load_snapshot_from_table()
@@ -1716,6 +1732,7 @@ async fn test_empty_content_snapshot_creation_impl(iceberg_table_config: Iceberg
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let iceberg_snapshot_payload = IcebergSnapshotPayload {
         uuid: uuid::Uuid::new_v4(),
@@ -1742,6 +1759,7 @@ async fn test_empty_content_snapshot_creation_impl(iceberg_table_config: Iceberg
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, snapshot) = iceberg_table_manager_for_recovery
         .load_snapshot_from_table()
@@ -1839,6 +1857,7 @@ async fn test_snapshot_creation_with_duplicate_filename_impl(
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let iceberg_snapshot_payload = IcebergSnapshotPayload {
         uuid: uuid::Uuid::new_v4(),
@@ -1869,6 +1888,7 @@ async fn test_snapshot_creation_with_duplicate_filename_impl(
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, snapshot) = iceberg_table_manager_for_recovery
         .load_snapshot_from_table()
@@ -1991,6 +2011,7 @@ async fn test_small_batch_size_and_large_parquet_size() {
         create_test_filesystem_accessor(&iceberg_table_config),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, snapshot) = iceberg_table_manager
         .load_snapshot_from_table()
@@ -2173,6 +2194,7 @@ async fn test_async_iceberg_snapshot_impl(iceberg_table_config: IcebergTableConf
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, snapshot) = iceberg_table_manager_for_recovery
         .load_snapshot_from_table()
@@ -2232,6 +2254,7 @@ async fn test_async_iceberg_snapshot_impl(iceberg_table_config: IcebergTableConf
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, mut snapshot) = iceberg_table_manager_for_recovery
         .load_snapshot_from_table()
@@ -2395,6 +2418,7 @@ async fn mooncake_table_snapshot_persist_impl(iceberg_table_config: IcebergTable
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, snapshot) = iceberg_table_manager
         .load_snapshot_from_table()
@@ -2471,6 +2495,7 @@ async fn mooncake_table_snapshot_persist_impl(iceberg_table_config: IcebergTable
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, snapshot) = iceberg_table_manager
         .load_snapshot_from_table()
@@ -2538,6 +2563,7 @@ async fn mooncake_table_snapshot_persist_impl(iceberg_table_config: IcebergTable
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, snapshot) = iceberg_table_manager
         .load_snapshot_from_table()
@@ -2609,6 +2635,7 @@ async fn mooncake_table_snapshot_persist_impl(iceberg_table_config: IcebergTable
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, mut snapshot) = iceberg_table_manager
         .load_snapshot_from_table()
@@ -2734,6 +2761,7 @@ async fn test_schema_for_table_creation_impl(iceberg_table_config: IcebergTableC
         filesystem_accessor,
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
 
     // Load table metadata and verify schema.
@@ -2818,6 +2846,7 @@ async fn test_schema_update_with_no_table_write_impl(iceberg_table_config: Icebe
         filesystem_accessor,
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, snapshot) = iceberg_table_manager_for_load
         .load_snapshot_from_table()
@@ -2860,6 +2889,7 @@ async fn test_schema_update_with_no_table_write_impl(iceberg_table_config: Icebe
         filesystem_accessor,
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, snapshot) = iceberg_table_manager_for_load
         .load_snapshot_from_table()
@@ -2955,6 +2985,7 @@ async fn test_schema_update_impl(iceberg_table_config: IcebergTableConfig) {
         filesystem_accessor,
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, snapshot) = iceberg_table_manager_for_load
         .load_snapshot_from_table()
@@ -2993,6 +3024,7 @@ async fn test_schema_update_impl(iceberg_table_config: IcebergTableConfig) {
         filesystem_accessor,
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (next_file_id, snapshot) = iceberg_table_manager_for_load
         .load_snapshot_from_table()
@@ -3192,6 +3224,7 @@ async fn test_persisted_deletion_record_remap() {
         filesystem_accessor.clone(),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
     let (_, snapshot) = iceberg_table_manager_for_recovery
         .load_snapshot_from_table()
