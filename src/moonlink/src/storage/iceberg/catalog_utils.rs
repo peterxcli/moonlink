@@ -14,7 +14,8 @@ use iceberg::{spec::TableMetadataBuilder, Result as IcebergResult, TableUpdate};
 /// It's worth noting catalog and warehouse uri are not 1-1 mapping; for example, rest catalog could handle warehouse.
 /// Here we simply deduce catalog type from warehouse because both filesystem and object storage catalog are only able to handle certain scheme.
 pub async fn create_catalog(
-    #[cfg(feature = "catalog-rest")] data_accessor_config: AccessorConfig,
+    // TODO: Workaround: add prefix underscore to avoid linting error. Refactor needed.
+    _data_accessor_config: AccessorConfig,
     catalog: IcebergCatalogConfig,
     iceberg_schema: IcebergSchema,
 ) -> IcebergResult<Box<dyn MoonlinkCatalog>> {
@@ -26,7 +27,7 @@ pub async fn create_catalog(
         IcebergCatalogConfig::Rest {
             rest_catalog_config,
         } => Ok(Box::new(
-            RestCatalog::new(rest_catalog_config, data_accessor_config).await?,
+            RestCatalog::new(rest_catalog_config, _data_accessor_config).await?,
         )),
         #[cfg(feature = "catalog-glue")]
         IcebergCatalogConfig::Glue { .. } => Err(iceberg::Error::new(
@@ -38,7 +39,8 @@ pub async fn create_catalog(
 
 /// Create a catalog with no schema provided.
 pub async fn create_catalog_without_schema(
-    #[cfg(feature = "catalog-rest")] data_accessor_config: AccessorConfig,
+    // TODO: Workaround: add prefix underscore to avoid linting error. Refactor needed.
+    _data_accessor_config: AccessorConfig,
     catalog: IcebergCatalogConfig,
 ) -> IcebergResult<Box<dyn MoonlinkCatalog>> {
     match catalog {
@@ -49,7 +51,7 @@ pub async fn create_catalog_without_schema(
         IcebergCatalogConfig::Rest {
             rest_catalog_config,
         } => Ok(Box::new(
-            RestCatalog::new(rest_catalog_config, data_accessor_config).await?,
+            RestCatalog::new(rest_catalog_config, _data_accessor_config).await?,
         )),
         #[cfg(feature = "catalog-glue")]
         IcebergCatalogConfig::Glue { .. } => Err(iceberg::Error::new(
