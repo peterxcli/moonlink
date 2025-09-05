@@ -1,14 +1,21 @@
 use crate::storage::iceberg::iceberg_table_config::RestCatalogConfig;
+use crate::storage::iceberg::moonlink_catalog::SchemaUpdate;
 use async_trait::async_trait;
+use iceberg::puffin::PuffinWriter;
+use iceberg::spec::Schema as IcebergSchema;
 use iceberg::table::Table;
 use iceberg::CatalogBuilder;
 use iceberg::Result as IcebergResult;
-use iceberg::{Catalog, Namespace, NamespaceIdent, Result, TableCommit, TableCreation, TableIdent};
+use iceberg::{Catalog, Namespace, NamespaceIdent, TableCommit, TableCreation, TableIdent};
 use iceberg_catalog_rest::{
     RestCatalog as IcebergRestCatalog, RestCatalogBuilder as IcebergRestCatalogBuilder,
     REST_CATALOG_PROP_URI, REST_CATALOG_PROP_WAREHOUSE,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+use crate::AccessorConfig;
+
+use super::moonlink_catalog::{PuffinBlobType, PuffinWrite};
 
 #[derive(Debug)]
 pub struct RestCatalog {
@@ -16,7 +23,11 @@ pub struct RestCatalog {
 }
 
 impl RestCatalog {
-    pub async fn new(mut config: RestCatalogConfig) -> Result<Self> {
+    #[allow(dead_code)]
+    pub async fn new(
+        mut config: RestCatalogConfig,
+        _accessor_config: AccessorConfig,
+    ) -> IcebergResult<Self> {
         let builder = IcebergRestCatalogBuilder::default();
         config
             .props
