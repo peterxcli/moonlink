@@ -73,7 +73,7 @@ pub struct IcebergTableManager {
 }
 
 impl IcebergTableManager {
-    pub fn new(
+    pub async fn new(
         mooncake_table_metadata: Arc<MooncakeTableMetadata>,
         object_storage_cache: Arc<dyn CacheTrait>,
         filesystem_accessor: Arc<dyn BaseFileSystemAccess>,

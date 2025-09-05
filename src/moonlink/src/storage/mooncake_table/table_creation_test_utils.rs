@@ -386,6 +386,7 @@ pub(crate) async fn create_table_and_iceberg_manager_with_data_compaction_config
         create_test_filesystem_accessor(&iceberg_table_config),
         iceberg_table_config.clone(),
     )
+    .await
     .unwrap();
 
     let (notify_tx, notify_rx) = mpsc::channel(100);

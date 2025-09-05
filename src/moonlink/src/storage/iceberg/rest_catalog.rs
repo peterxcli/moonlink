@@ -121,3 +121,38 @@ impl Catalog for RestCatalog {
         todo!("register existing table is not supported")
     }
 }
+
+#[async_trait]
+impl PuffinWrite for RestCatalog {
+    async fn record_puffin_metadata_and_close(
+        &mut self,
+        _puffin_filepath: String,
+        _puffin_writer: PuffinWriter,
+        _puffin_blob_type: PuffinBlobType,
+    ) -> IcebergResult<()> {
+        todo!("record puffin metadata and close is not supported")
+    }
+
+    fn set_data_files_to_remove(&mut self, _data_files: HashSet<String>) {
+        todo!("set data files to remove is not supported")
+    }
+
+    fn set_index_puffin_files_to_remove(&mut self, _puffin_filepaths: HashSet<String>) {
+        todo!("set index puffin files to remove is not supported")
+    }
+
+    fn clear_puffin_metadata(&mut self) {
+        todo!("clear puffin metadata is not supported")
+    }
+}
+
+#[async_trait]
+impl SchemaUpdate for RestCatalog {
+    async fn update_table_schema(
+        &mut self,
+        _new_schema: IcebergSchema,
+        _table_ident: TableIdent,
+    ) -> IcebergResult<Table> {
+        todo!("update table schema is not supported")
+    }
+}
