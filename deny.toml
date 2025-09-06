@@ -24,7 +24,7 @@ allow = [
 unknown-git = "deny"
 allow-git = [
     "https://github.com/apache/iceberg-rust.git",
-    "https://github.com/Mooncake-Labs/rust-postgres.git?rev=a7398c75b5cfd62fc016306a71d83306ad4ddf35",
+    "https://github.com/Mooncake-Labs/rust-postgres.git?rev=14c8e599f5551a8caa96ff5023685a6f537a1455",
 ]
 
 # TODO(hjiang): Cleanup these unmaintained crates.
@@ -32,6 +32,7 @@ allow-git = [
 ignore = [
     "RUSTSEC-2023-0071", # rsa - marvin attack
     "RUSTSEC-2024-0436", # paste - unmaintained
+    "RUSTSEC-2025-0055", # tracing-subscriber - injection attacks
 ]
 
 # TODO(hjiang): Resolve all duplicate dependencies.

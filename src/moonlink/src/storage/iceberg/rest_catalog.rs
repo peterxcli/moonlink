@@ -1,13 +1,17 @@
+use super::moonlink_catalog::{PuffinBlobType, PuffinWrite};
+use crate::storage::filesystem::accessor_config::AccessorConfig;
 use crate::storage::iceberg::catalog_utils::{reflect_table_updates, validate_table_requirements};
 use crate::storage::iceberg::iceberg_table_config::RestCatalogConfig;
+use crate::storage::iceberg::moonlink_catalog::SchemaUpdate;
 use async_trait::async_trait;
 use iceberg::io::FileIO;
 use iceberg::puffin::PuffinWriter;
+use iceberg::spec::Schema as IcebergSchema;
 use iceberg::spec::TableMetadataBuilder;
 use iceberg::table::Table;
 use iceberg::CatalogBuilder;
 use iceberg::Result as IcebergResult;
-use iceberg::{Catalog, Namespace, NamespaceIdent, Result, TableCommit, TableCreation, TableIdent};
+use iceberg::{Catalog, Namespace, NamespaceIdent, TableCommit, TableCreation, TableIdent};
 use iceberg_catalog_rest::{
     RestCatalog as IcebergRestCatalog, RestCatalogBuilder as IcebergRestCatalogBuilder,
     REST_CATALOG_PROP_URI, REST_CATALOG_PROP_WAREHOUSE,
@@ -16,9 +20,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::storage::iceberg::io_utils as iceberg_io_utils;
 use crate::storage::iceberg::table_commit_proxy::TableCommitProxy;
-use crate::AccessorConfig;
 
-use super::moonlink_catalog::{PuffinBlobType, PuffinWrite};
 use super::puffin_writer_proxy::{
     append_puffin_metadata_and_rewrite, get_puffin_metadata_and_close, PuffinBlobMetadataProxy,
 };
@@ -42,7 +44,7 @@ impl RestCatalog {
     pub async fn new(
         mut config: RestCatalogConfig,
         accessor_config: AccessorConfig,
-    ) -> Result<Self> {
+    ) -> IcebergResult<Self> {
         let builder = IcebergRestCatalogBuilder::default();
         config
             .props
@@ -218,5 +220,16 @@ impl PuffinWrite for RestCatalog {
         self.file_index_blobs_to_add.clear();
         self.puffin_blobs_to_remove.clear();
         self.data_files_to_remove.clear();
+    }
+}
+
+#[async_trait]
+impl SchemaUpdate for RestCatalog {
+    async fn update_table_schema(
+        &mut self,
+        _new_schema: IcebergSchema,
+        _table_ident: TableIdent,
+    ) -> IcebergResult<Table> {
+        todo!("update table schema is not supported")
     }
 }

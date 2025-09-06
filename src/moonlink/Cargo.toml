@@ -16,7 +16,6 @@ storage-s3 = [
     "base64",
     "hmac",
     "sha1",
-    "reqwest",
 ]
 
 # iceberg gcs io doesn't support HMAC key, so have to leverage S3 sdk.
@@ -28,7 +27,6 @@ storage-gcs = [
     "base64",
     "hmac",
     "sha1",
-    "reqwest",
 ]
 
 catalog-rest = ["iceberg-catalog-rest"]
@@ -65,6 +63,7 @@ lru = { workspace = true }
 memmap2 = "0.9"
 moka = { workspace = true }
 moonlink_error = { path = "../moonlink_error" }
+moonlink_proto = { path = "../moonlink_proto" }
 moonlink_table_metadata = { path = "../moonlink_table_metadata" }
 more-asserts = { workspace = true }
 multimap = { workspace = true }
@@ -72,8 +71,9 @@ num-bigint = { workspace = true }
 num-traits = { workspace = true }
 opendal = { workspace = true }
 parquet = { workspace = true }
+prost = { workspace = true }
 rand = { workspace = true }
-reqwest = { version = "0.12", features = ["json"], optional = true }
+reqwest = { workspace = true }
 roaring = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

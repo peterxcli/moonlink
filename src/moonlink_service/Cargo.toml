@@ -6,8 +6,9 @@ license = { workspace = true }
 
 [features]
 default = ["storage-fs"]
-rest_api_demo = ["dep:reqwest"]
+rest_api_demo = []
 standalone-test = []
+otel-integration = []
 
 storage-s3 = ["moonlink/storage-s3"]
 storage-gcs = ["moonlink/storage-gcs"]
@@ -20,20 +21,31 @@ axum = "0.8"
 clap = { workspace = true }
 moonlink = { path = "../moonlink" }
 moonlink_backend = { path = "../moonlink_backend" }
+moonlink_connectors = { path = "../moonlink_connectors" }
 moonlink_error = { path = "../moonlink_error" }
 moonlink_metadata_store = { path = "../moonlink_metadata_store" }
+moonlink_proto = { path = "../moonlink_proto" }
 moonlink_rpc = { path = "../moonlink_rpc" }
-reqwest = { version = "0.12", features = ["json"], optional = true }
+opentelemetry = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry-proto = { version = "0.30", default-features = false, features = ["gen-tonic", "metrics"] }
+opentelemetry-semantic-conventions = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+prost = { workspace = true }
+reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tower = { version = "0.5" }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 arrow = { workspace = true }
 arrow-array = { workspace = true }
+arrow-buffer = "55"
 async-recursion = "1"
 bytes = "1"
 more-asserts = { workspace = true }
