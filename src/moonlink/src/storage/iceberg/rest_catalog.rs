@@ -1,3 +1,5 @@
+use super::moonlink_catalog::{PuffinBlobType, PuffinWrite};
+use crate::storage::filesystem::accessor_config::AccessorConfig;
 use crate::storage::iceberg::iceberg_table_config::RestCatalogConfig;
 use crate::storage::iceberg::moonlink_catalog::SchemaUpdate;
 use async_trait::async_trait;
@@ -12,10 +14,6 @@ use iceberg_catalog_rest::{
     REST_CATALOG_PROP_URI, REST_CATALOG_PROP_WAREHOUSE,
 };
 use std::collections::{HashMap, HashSet};
-
-use crate::AccessorConfig;
-
-use super::moonlink_catalog::{PuffinBlobType, PuffinWrite};
 
 #[derive(Debug)]
 pub struct RestCatalog {

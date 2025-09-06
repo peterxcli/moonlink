@@ -50,7 +50,6 @@ pub(crate) fn get_iceberg_table_config(temp_dir: &TempDir) -> IcebergTableConfig
         atomic_write_dir: None,
     };
     let accessor_config = AccessorConfig::new_with_storage_config(storage_config);
-    // Select catalog based solely on features: REST when `catalog-rest` is enabled; otherwise FILE.
     let metadata_accessor_config = {
         {
             crate::IcebergCatalogConfig::File {

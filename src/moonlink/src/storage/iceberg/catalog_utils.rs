@@ -1,9 +1,10 @@
 #[cfg(test)]
 use crate::storage::filesystem::accessor::base_filesystem_accessor::BaseFileSystemAccess;
+use crate::storage::filesystem::accessor_config::AccessorConfig;
 use crate::storage::iceberg::file_catalog::FileCatalog;
 use crate::storage::iceberg::iceberg_table_config::IcebergCatalogConfig;
 use crate::storage::iceberg::moonlink_catalog::MoonlinkCatalog;
-use crate::AccessorConfig;
+
 use iceberg::spec::Schema as IcebergSchema;
 use iceberg::{spec::TableMetadataBuilder, Result as IcebergResult, TableUpdate};
 
