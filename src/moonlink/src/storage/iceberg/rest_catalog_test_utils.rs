@@ -27,7 +27,7 @@ pub(crate) fn default_accessor_config() -> AccessorConfig {
 
 pub(crate) fn default_rest_catalog_config() -> RestCatalogConfig {
     RestCatalogConfig {
-        name: DEFAULT_REST_CATALOG_NAME.to_string(),
+        name: format!("{}-{}", DEFAULT_REST_CATALOG_NAME, get_random_string()),
         uri: REST_CATALOG_TEST_URI.to_string(),
         warehouse: DEFAULT_WAREHOUSE_PATH.to_string(),
         props: HashMap::new(),
