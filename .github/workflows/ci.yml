@@ -56,8 +56,8 @@ jobs:
       - name: cargo deny check
         run: cargo deny check
 
-      - name: cargo dependency format
-        run: cargo sort --workspace
+      - name: cargo dependency format and check
+        run: cargo sort --workspace --check
 
   # ──────────────────────── 2 · GCS test (feature, chaos) ─────────────────
   gcs_test:
@@ -529,7 +529,7 @@ jobs:
   postgres_tests:
     name: PostgreSQL Integration Tests
     runs-on: ubuntu-latest
-    
+
     services:
       postgres:
         image: postgres:latest
@@ -562,6 +562,7 @@ jobs:
           make-default: true
 
       - name: Wait for PostgreSQL
+        timeout-minutes: 2
         run: |
           set -euo pipefail
           for i in {1..10}; do
@@ -576,11 +577,13 @@ jobs:
           exit 1
 
       - name: Configure PostgreSQL for logical replication
+        timeout-minutes: 2
         run: |
           PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d postgres -c "ALTER SYSTEM SET wal_level = 'logical';"
           PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d postgres -c "SELECT pg_reload_conf();"
 
       - name: Restart PostgreSQL to apply wal_level
+        timeout-minutes: 2
         run: |
           set -euo pipefail
           docker restart postgres
@@ -603,19 +606,19 @@ jobs:
           cargo test --package moonlink_connectors --lib --features connector-pg
           # want to test storing and retrieving different types of storage configs
           cargo test --package moonlink_metadata_store --tests --features "metadata-all test-utils storage-s3 storage-gcs"
-      
+
       - name: Run Backend integration tests
         timeout-minutes: 10
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
         run: |
-          cargo test --package moonlink_backend --test test_backend
+          cargo test --package moonlink_backend --test '*'
 
   # ───────────── 14 · Moonlink Service Integration Tests ─────────────
   moonlink_service_tests:
     name: Moonlink Service Integration Tests
     runs-on: ubuntu-latest
-    
+
     steps:
       - uses: actions/checkout@v5
 

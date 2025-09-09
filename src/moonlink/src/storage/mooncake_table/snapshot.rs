@@ -61,6 +61,13 @@ pub(crate) struct SnapshotTableState {
     // Invariant: all processed deletion records are valid, here we use `Option` simply for an easy way to `move` the record out.
     pub(crate) uncommitted_deletion_log: Vec<Option<ProcessedDeletionRecord>>,
 
+    /// Committed deletion logs are pruned when:
+    /// - It's persisted in iceberg;
+    /// - It's not being compacted, so compaction remap only happens in mooncake snapshot.
+    ///
+    /// Data files which are being compacted.
+    pub(crate) compacting_data_files: HashSet<FileId>,
+
     /// Last commit point
     pub(super) last_commit: RecordLocation,
 
@@ -168,6 +175,7 @@ impl SnapshotTableState {
             table_notify: None,
             committed_deletion_log: Vec::new(),
             uncommitted_deletion_log: Vec::new(),
+            compacting_data_files: HashSet::new(),
             unpersisted_records: UnpersistedRecords::new(table_config),
             non_streaming_batch_id_counter,
         })
@@ -268,8 +276,16 @@ impl SnapshotTableState {
                     new_committed_deletion_log.push(cur_deletion_log);
                 }
                 // Check whether committed deletion logs have been persisted, and prune if persisted.
+                // Notice, all remapping logic should be scoped in snapshot, so if a data file is in compaction, skip pruning the deletion logs.
                 RecordLocation::DiskFile(file_id, row_idx) => {
                     if !committed_deletion_logs.contains(&(*file_id, *row_idx)) {
+                        new_committed_deletion_log.push(cur_deletion_log);
+                        continue;
+                    }
+                    // Persisted committed deletion records fall into two categories:
+                    // - Included in the compaction, which get removed due to "failed" remap;
+                    // - Not included in the compaction, which convert to the newly compacted data files' deletion record after remap.
+                    if self.compacting_data_files.contains(file_id) {
                         new_committed_deletion_log.push(cur_deletion_log);
                     }
                 }
@@ -388,7 +404,7 @@ impl SnapshotTableState {
             //
             // If the old entry is pinned cache handle, unreference.
             let old_entry = old_entry.unwrap();
-            if let Some(mut cache_handle) = old_entry.cache_handle {
+            if let Some(cache_handle) = old_entry.cache_handle {
                 // The old entry is no longer needed for mooncake table, directly mark it deleted from cache, so we could reclaim the disk space back ASAP.
                 let cur_evicted_files = cache_handle.unreference_and_delete().await;
                 evicted_files_to_delete.extend(cur_evicted_files);
@@ -413,7 +429,7 @@ impl SnapshotTableState {
             }
 
             // Unpin and request to delete all cached puffin files.
-            if let Some(mut puffin_deletion_blob) = old_entry.puffin_deletion_blob {
+            if let Some(puffin_deletion_blob) = old_entry.puffin_deletion_blob {
                 let cur_evicted_files = puffin_deletion_blob
                     .puffin_file_cache_handle
                     .unreference_and_delete()
@@ -477,6 +493,9 @@ impl SnapshotTableState {
         let expected_disk_files_count = self.get_expected_disk_files_count(&task);
         // Calculate the expected file indices number after current snapshot update.
         let expected_file_indices_count = self.get_expected_file_indices_count(&task);
+
+        // Update compacting data files, so their committed deletion logs won't get deleted.
+        self.compacting_data_files = std::mem::take(&mut task.compacting_data_files);
 
         // All evicted data files by the object storage cache.
         let mut evicted_data_files_to_delete = vec![];
@@ -542,6 +561,16 @@ impl SnapshotTableState {
             self.current_snapshot.flush_lsn = Some(new_flush_lsn);
         }
 
+        // Update LSN if applicable.
+        if let Some(new_largest_flush_lsn) = task.new_largest_flush_lsn {
+            // It's ok for new largest flush LSN to regress.
+            if self.current_snapshot.largest_flush_lsn.is_none()
+                || new_largest_flush_lsn > self.current_snapshot.largest_flush_lsn.unwrap()
+            {
+                self.current_snapshot.largest_flush_lsn = Some(new_largest_flush_lsn);
+            }
+        }
+
         if task.commit_lsn_baseline != 0 {
             self.current_snapshot.snapshot_version = task.commit_lsn_baseline;
         }
@@ -563,11 +592,12 @@ impl SnapshotTableState {
         let force_empty_iceberg_payload = task.force_empty_iceberg_payload;
 
         // Decide whether to perform a data compaction.
-        //
-        // No need to pin puffin file during compaction:
-        // - only compaction deletes puffin file
-        // - there's no two ongoing compaction
         let data_compaction_payload = self.get_payload_to_compact(&opt.data_compaction_option);
+
+        // Before compaction actually taking place, we need to increment reference count for already pinned files.
+        if let Some(payload) = data_compaction_payload.get_payload_reference() {
+            payload.pin_referenced_compaction_payload().await;
+        }
 
         // Decide whether to merge an index merge, which cannot be performed together with data compaction.
         let mut file_indices_merge_payload = IndexMergeMaintenanceStatus::Unknown;
@@ -580,9 +610,11 @@ impl SnapshotTableState {
 
         // TODO(hjiang): When there's only schema evolution, we should also flush even no flush.
         let flush_lsn = self.current_snapshot.flush_lsn.unwrap_or(0);
+        let largest_flush_lsn = self.current_snapshot.largest_flush_lsn.unwrap_or(0);
         if opt.iceberg_snapshot_option != IcebergSnapshotOption::Skip
             && (force_empty_iceberg_payload || flush_by_table_write)
             && flush_lsn < task.min_ongoing_flush_lsn
+            && flush_lsn == largest_flush_lsn
         {
             // Getting persistable committed deletion logs is not cheap, which requires iterating through all logs,
             // so we only aggregate when there's committed deletion.
