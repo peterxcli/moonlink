@@ -14,6 +14,8 @@ use crate::storage::iceberg::iceberg_table_config::IcebergTableConfig;
 #[cfg(feature = "catalog-rest")]
 use crate::storage::iceberg::iceberg_table_config::RestCatalogConfig;
 use crate::storage::iceberg::iceberg_table_manager::IcebergTableManager;
+#[cfg(feature = "catalog-rest")]
+use crate::storage::iceberg::rest_catalog_test_utils::get_unique_rest_catalog_name;
 #[cfg(feature = "chaos-test")]
 use crate::storage::index::index_merge_config::FileIndexMergeConfig;
 use crate::storage::mooncake_table::test_utils_commons::*;
@@ -57,7 +59,7 @@ pub(crate) fn get_iceberg_table_config(temp_dir: &TempDir) -> IcebergTableConfig
         #[cfg(feature = "catalog-rest")]
         {
             let rest_config = RestCatalogConfig {
-                name: REST_CATALOG_TEST_NAME.to_string(),
+                name: get_unique_rest_catalog_name().to_string(),
                 uri: REST_CATALOG_TEST_URI.to_string(),
                 warehouse: accessor_config.get_root_path(),
                 props: HashMap::new(),
@@ -157,7 +159,7 @@ pub(crate) fn create_iceberg_table_config(warehouse_uri: String) -> IcebergTable
         #[cfg(feature = "catalog-rest")]
         {
             let rest_config = RestCatalogConfig {
-                name: REST_CATALOG_TEST_NAME.to_string(),
+                name: get_unique_rest_catalog_name().to_string(),
                 uri: REST_CATALOG_TEST_URI.to_string(),
                 warehouse: warehouse_uri.clone(),
                 props: HashMap::new(),
